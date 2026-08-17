@@ -105,6 +105,9 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
   const [jobError, setJobError] = React.useState<string | null>(null);
   const [savedFilename, setSavedFilename] = React.useState<string | null>(null);
   const pollTimer = React.useRef<number | null>(null);
+  // Tracks whether the dialog is open so in-flight poll callbacks can stop early (see pollJob).
+  const dialogOpenRef = React.useRef(open);
+  dialogOpenRef.current = open;
 
   const clearPollTimer = () => {
     if (pollTimer.current !== null) {
@@ -250,6 +253,10 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
     pollTimer.current = window.setTimeout(async () => {
       try {
         const currentJob = await fetchOsImageJob(jobId);
+        if (!dialogOpenRef.current) {
+          // Dialog closed while the poll was in flight: stop polling and never auto-download.
+          return;
+        }
         setJob(currentJob);
 
         if (currentJob.phase === 'ready') {
@@ -310,6 +317,10 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
         ...(network === 'wifi' && wifiSsid ? { wifiSsid } : {}),
         ...(network === 'wifi' && wifiKey ? { wifiKey } : {}),
       });
+      if (!dialogOpenRef.current) {
+        // Dialog closed while the prepare request was in flight: do not start polling.
+        return;
+      }
       setJob({ jobId, phase: 'downloading' });
       pollJob(jobId, POLL_INTERVAL_MS);
     } catch (error) {

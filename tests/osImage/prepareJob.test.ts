@@ -5,7 +5,7 @@ import {
   toFleetConfigOptions,
   type PrepareOsImageRequest,
 } from '../../server/controller/osImage/prepareJob';
-import { configSha16 } from '../../server/controller/osImage/cacheStore';
+import { configSha16, isValidDeviceTypeSlug, isValidOsVersion } from '../../server/controller/osImage/cacheStore';
 
 const baseRequest: PrepareOsImageRequest = {
   deviceType: 'raspberrypi4-64',
@@ -24,6 +24,34 @@ test('artifactDownloadFilename sanitizes the fleet name', () => {
     'raspberrypi4-64-3.2.7-dev-prod-fleet-1.gz',
   );
   assert.equal(artifactDownloadFilename({ ...baseRequest, fleetName: '///' }), 'raspberrypi4-64-3.2.7-fleet.zip');
+});
+
+test('artifactDownloadFilename sanitizes hostile device types and versions', () => {
+  assert.equal(
+    artifactDownloadFilename({ ...baseRequest, deviceType: '../../etc', version: '1.0.0"\r\nX-Evil: x' }),
+    '..-..-etc-1.0.0-X-Evil-x-My-Fleet.zip',
+  );
+});
+
+test('device type slugs are strictly allow-listed', () => {
+  assert.equal(isValidDeviceTypeSlug('raspberrypi4-64'), true);
+  assert.equal(isValidDeviceTypeSlug('generic-amd64'), true);
+  assert.equal(isValidDeviceTypeSlug('fincm3'), true);
+  assert.equal(isValidDeviceTypeSlug('../img'), false);
+  assert.equal(isValidDeviceTypeSlug('a/b'), false);
+  assert.equal(isValidDeviceTypeSlug('.hidden'), false);
+  assert.equal(isValidDeviceTypeSlug(''), false);
+  assert.equal(isValidDeviceTypeSlug('x'.repeat(65)), false);
+});
+
+test('OS versions are strictly allow-listed', () => {
+  assert.equal(isValidOsVersion('3.2.7'), true);
+  assert.equal(isValidOsVersion('7.4.0+rev5'), true);
+  assert.equal(isValidOsVersion('2026.7.0'), true);
+  assert.equal(isValidOsVersion('latest'), true);
+  assert.equal(isValidOsVersion('../../out/x'), false);
+  assert.equal(isValidOsVersion('1.0.0 evil'), false);
+  assert.equal(isValidOsVersion(''), false);
 });
 
 test('toFleetConfigOptions maps variant and optional fields', () => {

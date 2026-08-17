@@ -65,6 +65,16 @@ interface OsImageJobEntry extends OsImageJob {
 
 const jobs = new Map<string, OsImageJobEntry>();
 
+/** How long a finished (ready/error) job stays pollable/downloadable before eviction. */
+const JOB_RETENTION_MS = 30 * 60 * 1000;
+
+const scheduleJobCleanup = (jobId: string): void => {
+  const timer = setTimeout(() => {
+    jobs.delete(jobId);
+  }, JOB_RETENTION_MS);
+  timer.unref?.();
+};
+
 export const getOsImageJob = (jobId: string): OsImageJob | undefined => {
   const entry = jobs.get(jobId);
   if (!entry) {
@@ -94,15 +104,20 @@ export const toFleetConfigOptions = (request: PrepareOsImageRequest): FleetConfi
 
 /**
  * Browser-facing download filename: `<deviceType>-<version>[-dev]-<sanitized fleetName>.<zip|gz>`.
+ * Every part is sanitized so the value is safe to embed in Content-Disposition.
  */
+const sanitizeFilenamePart = (value: string, fallback: string): string =>
+  value
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64) || fallback;
+
 export const artifactDownloadFilename = (request: PrepareOsImageRequest): string => {
-  const fleetSlug =
-    request.fleetName
-      .replace(/[^a-zA-Z0-9._-]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 64) || 'fleet';
+  const deviceType = sanitizeFilenamePart(request.deviceType, 'device');
+  const version = sanitizeFilenamePart(request.version, 'os');
+  const fleetSlug = sanitizeFilenamePart(request.fleetName, 'fleet');
   const variantSuffix = request.variant === 'development' ? '-dev' : '';
-  return `${request.deviceType}-${request.version}${variantSuffix}-${fleetSlug}.${request.format}`;
+  return `${deviceType}-${version}${variantSuffix}-${fleetSlug}.${request.format}`;
 };
 
 const fileExists = async (filePath: string): Promise<boolean> => {
@@ -182,12 +197,17 @@ const downloadPristineImage = async (job: OsImageJobEntry, destination: string):
   });
 
   const tmpFile = path.join(path.dirname(destination), `.${path.basename(destination)}.${job.jobId}.part`);
-  await streamPipeline(
-    Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>),
-    progressCounter,
-    createWriteStream(tmpFile),
-  );
-  await fsp.rename(tmpFile, destination);
+  try {
+    await streamPipeline(
+      Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>),
+      progressCounter,
+      createWriteStream(tmpFile),
+    );
+    await fsp.rename(tmpFile, destination);
+  } catch (error) {
+    await silentlyRemove(tmpFile);
+    throw error;
+  }
 };
 
 /**
@@ -284,6 +304,10 @@ const runOsImageJob = async (job: OsImageJobEntry, cacheStore: CacheStore): Prom
     job.phase = 'injecting';
     job.progress = undefined;
     const config = await generateFleetConfig(job.authorization, configOptions);
+    // The forwarded credentials and wifi secrets are no longer needed once the config exists.
+    job.authorization = undefined;
+    job.request.wifiSsid = undefined;
+    job.request.wifiKey = undefined;
     await fsp.copyFile(pristinePath, workingImage);
     await configJson.write(workingImage, undefined, config);
 
@@ -307,6 +331,7 @@ const runOsImageJob = async (job: OsImageJobEntry, cacheStore: CacheStore): Prom
   } finally {
     await silentlyRemove(workingImage);
     cacheStore.unprotect(protectedPaths);
+    scheduleJobCleanup(job.jobId);
   }
 };
 

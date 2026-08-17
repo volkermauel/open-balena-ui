@@ -45,6 +45,13 @@ export const cacheMaxBytes = (): number => {
 export const variantToken = (variant: OsImageVariant): 'prod' | 'dev' => (variant === 'development' ? 'dev' : 'prod');
 
 export const variantFromToken = (token: string): OsImageVariant => (token === 'dev' ? 'development' : 'production');
+/** Device type slugs: letters, digits, dots, hyphens (e.g. `raspberrypi4-64`). */
+export const isValidDeviceTypeSlug = (deviceType: string): boolean =>
+  /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(deviceType) && deviceType.length <= 64;
+
+/** balenaOS versions: semver-ish, optionally with `+revN` builds (e.g. `7.4.0+rev5`). */
+export const isValidOsVersion = (version: string): boolean =>
+  /^[a-zA-Z0-9][a-zA-Z0-9._+-]*$/.test(version) && version.length <= 64;
 
 /** Pristine (unconfigured) image cache key: `{deviceType}__{version}__{prod|dev}.img` */
 export const pristineFilename = (deviceType: string, version: string, variant: OsImageVariant): string =>

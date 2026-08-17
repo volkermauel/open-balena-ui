@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import authorize from '../middleware/authorize';
 import dosProtect from '../middleware/dosProtect';
 import { OsImageError, listOsVersions, osImageCacheStore } from '../controller/osImage';
+import { isValidDeviceTypeSlug, isValidOsVersion } from '../controller/osImage/cacheStore';
 import {
   createOsImageJob,
   getOsImageJob,
@@ -58,6 +59,7 @@ interface PrepareOsImageRequestBody {
 const VARIANTS: OsImageVariant[] = ['production', 'development'];
 const FORMATS: OsImageFormat[] = ['zip', 'gz'];
 const NETWORKS: OsImageNetwork[] = ['ethernet', 'wifi'];
+const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const sendOsImageError = (
   res: { status: (code: number) => { json: (body: ErrorResponse) => void } },
@@ -87,6 +89,10 @@ router.get<Record<string, never>, OsVersionsResponse | ErrorResponse>(
       res.status(406).json({ success: false, message: 'Request is lacking deviceType in query context' });
       return;
     }
+    if (!isValidDeviceTypeSlug(deviceType)) {
+      res.status(406).json({ success: false, message: 'Request has an invalid deviceType in query context' });
+      return;
+    }
 
     try {
       res.status(200).json({ versions: await listOsVersions(deviceType) });
@@ -105,6 +111,10 @@ router.get<Record<string, never>, OsCacheStatusResponse | ErrorResponse>(
 
     if (!deviceType) {
       res.status(406).json({ success: false, message: 'Request is lacking deviceType in query context' });
+      return;
+    }
+    if (!isValidDeviceTypeSlug(deviceType)) {
+      res.status(406).json({ success: false, message: 'Request has an invalid deviceType in query context' });
       return;
     }
 
@@ -141,6 +151,14 @@ router.post<Record<string, never>, PrepareOsImageSuccessResponse | ErrorResponse
       res
         .status(406)
         .json({ success: false, message: 'Request is lacking deviceType, version or fleetName in body context' });
+      return;
+    }
+    if (!isValidDeviceTypeSlug(deviceType)) {
+      res.status(406).json({ success: false, message: 'Request has an invalid deviceType in body context' });
+      return;
+    }
+    if (!isValidOsVersion(version)) {
+      res.status(406).json({ success: false, message: 'Request has an invalid version in body context' });
       return;
     }
     if (!VARIANTS.includes(variant as OsImageVariant)) {
@@ -187,7 +205,7 @@ router.post<Record<string, never>, PrepareOsImageSuccessResponse | ErrorResponse
 );
 
 router.get<{ id: string }, OsJobResponse | ErrorResponse>('/jobs/:id', ...dosProtect, authorize, (req, res) => {
-  const job = getOsImageJob(req.params.id);
+  const job = JOB_ID_PATTERN.test(req.params.id) ? getOsImageJob(req.params.id) : undefined;
 
   if (!job) {
     res.status(404).json({ success: false, message: 'Unknown OS image job' });
@@ -202,7 +220,7 @@ router.get<{ id: string }, ErrorResponse | undefined>(
   ...dosProtect,
   authorize,
   async (req, res) => {
-    const job = getOsImageJob(req.params.id);
+    const job = JOB_ID_PATTERN.test(req.params.id) ? getOsImageJob(req.params.id) : undefined;
 
     if (!job) {
       res.status(404).json({ success: false, message: 'Unknown OS image job' });
@@ -229,7 +247,22 @@ router.get<{ id: string }, ErrorResponse | undefined>(
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Length', sizeBytes.toString());
     res.setHeader('Content-Disposition', `attachment; filename="${job.artifact.filename}"`);
-    createReadStream(artifactPath).pipe(res);
+    // Keep the artifact pinned while it streams so concurrent eviction cannot unlink it mid-flight.
+    osImageCacheStore.protect([artifactPath]);
+    const stream = createReadStream(artifactPath);
+    stream.on('error', () => {
+      osImageCacheStore.unprotect([artifactPath]);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: 'Failed to stream the prepared artifact' });
+      } else {
+        res.destroy();
+      }
+    });
+    res.on('close', () => {
+      stream.destroy();
+      osImageCacheStore.unprotect([artifactPath]);
+    });
+    stream.pipe(res);
   },
 );
 
