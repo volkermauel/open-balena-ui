@@ -1,5 +1,7 @@
 import { Box, useTheme } from '@mui/material';
 import IconButton from '@mui/material/IconButton';
+import PauseIcon from '@mui/icons-material/Pause';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import React from 'react';
 import { Form, SelectInput, useAuthProvider, useDataProvider, useRecordContext, useNotify } from 'react-admin';
@@ -26,16 +28,31 @@ type DeviceRecord = ResourceRecord & {
   uuid: string;
 };
 
+// Live-tail polling. While tailing is enabled, a container is selected and the
+// tab is visible, the api logs endpoint is polled once per interval and the pane
+// scrolls to the newest entry (matching the official balena dashboard behaviour).
+const LOGS_POLL_INTERVAL_MS = 1000;
+// After a failed request, poll slower until one succeeds to avoid hammering the
+// api (e.g. device offline, api restarting).
+const LOGS_ERROR_POLL_INTERVAL_MS = 5000;
+
 export const DeviceLogs: React.FC = () => {
   const record = useRecordContext<DeviceRecord>();
   const [loaded, setLoaded] = React.useState(false);
   const [containers, setContainers] = React.useState<ContainerChoice[]>([]);
   const [container, setContainer] = React.useState<number | 'default'>('default');
   const [content, setContent] = React.useState('');
+  const [tailing, setTailing] = React.useState(true);
   const dataProvider = useDataProvider<DataProvider>();
   const authProvider = useAuthProvider<OpenBalenaAuthProvider>();
   const notify = useNotify();
   const theme = useTheme();
+
+  // Live-tail bookkeeping (refs: not part of the render path)
+  const inFlightRef = React.useRef(false);
+  const errorCountRef = React.useRef(0);
+  const errorNotifiedRef = React.useRef(false);
+  const lastAttemptRef = React.useRef(0);
 
   // Get logs colors from theme palette
   const logsPalette = theme.palette.logs;
@@ -82,14 +99,20 @@ export const DeviceLogs: React.FC = () => {
   }, [authProvider, record]);
 
   const updateLogs = React.useCallback(async () => {
-    if (container === 'default') {
+    if (container === 'default' || inFlightRef.current) {
       return;
     }
 
+    inFlightRef.current = true;
+    lastAttemptRef.current = Date.now();
+
     try {
       const logs = await fetchLogs();
+      errorCountRef.current = 0;
+      errorNotifiedRef.current = false;
+
       if (!logs?.length) {
-        setContent('');
+        setContent((previous) => (previous === '' ? previous : ''));
         return;
       }
 
@@ -101,41 +124,47 @@ export const DeviceLogs: React.FC = () => {
         return Number(entry.serviceId) === Number(container);
       });
 
-      if (!filteredLogs.length) {
-        setContent('');
-        return;
-      }
+      let nextContent = '';
+      if (filteredLogs.length) {
+        const formattedLogs = filteredLogs
+          .map((entry) => {
+            const time = new Date(entry.timestamp).toISOString();
+            const message = entry.message ?? '';
 
-      const formattedLogs = filteredLogs
-        .map((entry) => {
-          const time = new Date(entry.timestamp).toISOString();
-          const message = entry.message ?? '';
+            if (entry.isStdErr) {
+              return `[${time}] <span style="color: ${logsErrorColor}; ">${message}</span>`;
+            }
 
-          if (entry.isStdErr) {
-            return `[${time}] <span style="color: ${logsErrorColor}; ">${message}</span>`;
-          }
+            if (entry.isSystem) {
+              return `[${time}] <span style="color: ${logsWarningColor}; ">${message}</span>`;
+            }
 
-          if (entry.isSystem) {
-            return `[${time}] <span style="color: ${logsWarningColor}; ">${message}</span>`;
-          }
+            return `[${time}] ${message}`;
+          })
+          .join('<br/>');
 
-          return `[${time}] ${message}`;
-        })
-        .join('<br/>');
-
-      setContent(
-        `<html>
+        nextContent = `<html>
           <body style='font-family: consolas; color: ${logsTextColor}; background-color: ${logsBgColor}; margin: 0; padding: 10px;'>
             <div>${formattedLogs}</div>
             <script>window.scrollTo(0, document.body.scrollHeight);</script>
           </body>
-        </html>`,
-      );
+        </html>`;
+      }
+
+      // Only replace the frame document when something actually changed: the
+      // iframe fully reloads on every srcDoc change, so an unconditional update
+      // would flicker once per poll while a device is idle.
+      setContent((previous) => (previous === nextContent ? previous : nextContent));
     } catch (error) {
       console.error(error);
-      if (record?.uuid) {
+      errorCountRef.current += 1;
+      // Notify once per outage instead of once per failed poll.
+      if (record?.uuid && !errorNotifiedRef.current) {
+        errorNotifiedRef.current = true;
         notify(`Error: Could not get logs for device ${record.uuid}`, { type: 'error' });
       }
+    } finally {
+      inFlightRef.current = false;
     }
   }, [container, fetchLogs, logsBgColor, logsTextColor, logsErrorColor, logsWarningColor, notify, record]);
 
@@ -146,6 +175,45 @@ export const DeviceLogs: React.FC = () => {
 
     void updateLogs();
   }, [container, updateLogs]);
+
+  // Live tail: poll while enabled + a container is selected + the tab is visible.
+  React.useEffect(() => {
+    if (container === 'default' || !tailing) {
+      return;
+    }
+
+    const tick = () => {
+      if (document.hidden) {
+        return;
+      }
+
+      const minInterval = errorCountRef.current > 0 ? LOGS_ERROR_POLL_INTERVAL_MS : LOGS_POLL_INTERVAL_MS;
+      if (Date.now() - lastAttemptRef.current < minInterval) {
+        return;
+      }
+
+      void updateLogs();
+    };
+
+    const intervalId = window.setInterval(tick, LOGS_POLL_INTERVAL_MS);
+    return () => window.clearInterval(intervalId);
+  }, [container, tailing, updateLogs]);
+
+  // Catch up immediately when the tab becomes visible again.
+  React.useEffect(() => {
+    if (container === 'default' || !tailing) {
+      return;
+    }
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        void updateLogs();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [container, tailing, updateLogs]);
 
   React.useEffect(() => {
     if (loaded || !record) {
@@ -270,7 +338,20 @@ export const DeviceLogs: React.FC = () => {
           <IconButton
             disabled={container === 'default'}
             size='small'
-            sx={{ ml: '10px' }}
+            sx={{ ml: '5px' }}
+            onClick={() => {
+              setTailing((previous) => !previous);
+            }}
+            aria-label={tailing ? 'Pause live tail' : 'Resume live tail'}
+            title={tailing ? 'Pause live tail' : 'Resume live tail'}
+          >
+            {tailing ? <PauseIcon /> : <PlayArrowIcon />}
+          </IconButton>
+
+          <IconButton
+            disabled={container === 'default'}
+            size='small'
+            sx={{ ml: '5px' }}
             onClick={() => {
               void updateLogs();
             }}
