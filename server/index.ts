@@ -4,6 +4,7 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import serialize from 'serialize-javascript';
 import registryImageRoutes from './routes/registryImage';
+import osImageRoutes from './routes/osImage';
 
 dotenv.config();
 
@@ -23,6 +24,7 @@ const CLIENT_ENV_KEYS = [
 const app = express();
 
 app.use('/', registryImageRoutes);
+app.use('/os-images', osImageRoutes);
 app.use(express.static(CLIENT_DIR, { index: false }));
 app.get(/.*/, (_req, res) => {
   const indexPath = path.join(process.cwd(), CLIENT_DIR, 'index.html');

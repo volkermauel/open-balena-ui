@@ -4,12 +4,14 @@
 
 ### Requirement: Version listing
 
-The system SHALL list available balenaOS versions for a given device type slug, sourced from balenaCloud's public release catalog, deduplicated and ordered newest-first.
+The system SHALL list available balenaOS versions for a given device type slug, sourced from balenaCloud's public
+release catalog, deduplicated and ordered newest-first.
 
 #### Scenario: List versions for a device type
 
 - **WHEN** an authenticated client requests `GET /os-images/versions?deviceType=<slug>`
-- **THEN** the response contains the unique `raw_version` values for final, successful host releases of that device type, ordered semver-descending
+- **THEN** the response contains the unique `raw_version` values for final, successful host releases of that device
+  type, ordered semver-descending
 
 #### Scenario: Upstream unavailable
 
@@ -18,7 +20,8 @@ The system SHALL list available balenaOS versions for a given device type slug, 
 
 ### Requirement: Image variant selection
 
-The system SHALL support both production and development image variants, mapping them to balenaCloud's `developmentMode` download parameter.
+The system SHALL support both production and development image variants, mapping them to balenaCloud's `developmentMode`
+download parameter.
 
 #### Scenario: Development variant requested
 
@@ -32,12 +35,14 @@ The system SHALL support both production and development image variants, mapping
 
 ### Requirement: Fleet configuration generation
 
-The system SHALL generate the fleet provisioning `config.json` by calling openBalena's `POST /download-config` with the requesting user's own JWT and the selected fleet, version, network, and provisioning options.
+The system SHALL generate the fleet provisioning `config.json` by calling openBalena's `POST /download-config` with the
+requesting user's own JWT and the selected fleet, version, network, and provisioning options.
 
 #### Scenario: Config generated with user JWT
 
 - **WHEN** a prepare job runs for a fleet
-- **THEN** the server forwards the caller's `Authorization` header to openBalena's `/download-config` with the fleet's application id and selected options, and injects the returned JSON into the image
+- **THEN** the server forwards the caller's `Authorization` header to openBalena's `/download-config` with the fleet's
+  application id and selected options, and injects the returned JSON into the image
 
 #### Scenario: Config generation unauthorized
 
@@ -46,7 +51,8 @@ The system SHALL generate the fleet provisioning `config.json` by calling openBa
 
 ### Requirement: Config injection
 
-The system SHALL inject the generated `config.json` into the boot partition of the uncompressed image before compression, using the same mechanism as `balena os configure`.
+The system SHALL inject the generated `config.json` into the boot partition of the uncompressed image before
+compression, using the same mechanism as `balena os configure`.
 
 #### Scenario: Injected image boots into the fleet
 
@@ -55,16 +61,19 @@ The system SHALL inject the generated `config.json` into the boot partition of t
 
 ### Requirement: Compressed artifact download
 
-The system SHALL deliver provisioned images as `.zip` or `.gz` archives containing the injected image, streamed to the browser with an appropriate download filename.
+The system SHALL deliver provisioned images as `.zip` or `.gz` archives containing the injected image, streamed to the
+browser with an appropriate download filename.
 
 #### Scenario: Download artifact
 
 - **WHEN** a job has reached `ready` state and the client requests `GET /os-images/jobs/:id/download`
-- **THEN** the response streams the archive with `Content-Disposition: attachment` naming device type, version, variant, and fleet
+- **THEN** the response streams the archive with `Content-Disposition: attachment` naming device type, version, variant,
+  and fleet
 
 ### Requirement: Pristine image cache
 
-The system SHALL download each pristine (unconfigured) image from balenaCloud at most once per (device type, version, variant), storing it in the cache directory and reusing it for subsequent prepares.
+The system SHALL download each pristine (unconfigured) image from balenaCloud at most once per (device type, version,
+variant), storing it in the cache directory and reusing it for subsequent prepares.
 
 #### Scenario: Second download is served from cache
 
@@ -73,7 +82,8 @@ The system SHALL download each pristine (unconfigured) image from balenaCloud at
 
 ### Requirement: Configured artifact cache
 
-The system SHALL cache compressed, provisioned artifacts keyed by device type, version, variant, config hash, and format, and reuse them when an identical configuration is prepared again.
+The system SHALL cache compressed, provisioned artifacts keyed by device type, version, variant, config hash, and
+format, and reuse them when an identical configuration is prepared again.
 
 #### Scenario: Identical config reuses artifact
 
@@ -82,7 +92,8 @@ The system SHALL cache compressed, provisioned artifacts keyed by device type, v
 
 ### Requirement: Cache size enforcement
 
-The system SHALL bound total cache disk usage with an LRU eviction policy and a configurable cap (`OS_IMAGE_CACHE_MAX_GB`, default 20 GB), and SHALL never evict files in use by running jobs.
+The system SHALL bound total cache disk usage with an LRU eviction policy and a configurable cap
+(`OS_IMAGE_CACHE_MAX_GB`, default 20 GB), and SHALL never evict files in use by running jobs.
 
 #### Scenario: Cap exceeded
 
@@ -91,7 +102,8 @@ The system SHALL bound total cache disk usage with an LRU eviction policy and a 
 
 ### Requirement: Cache status reporting
 
-The system SHALL report which versions per device type and variant are present in the cache, so the UI can indicate cached entries.
+The system SHALL report which versions per device type and variant are present in the cache, so the UI can indicate
+cached entries.
 
 #### Scenario: Cached badge in version dropdown
 
@@ -100,7 +112,8 @@ The system SHALL report which versions per device type and variant are present i
 
 ### Requirement: Preparation job lifecycle
 
-The system SHALL expose an asynchronous prepare job with a stable identifier and observable phases (`downloading`, `injecting`, `compressing`, `ready`, `error`), including byte progress during download when the upstream size is known.
+The system SHALL expose an asynchronous prepare job with a stable identifier and observable phases (`downloading`,
+`injecting`, `compressing`, `ready`, `error`), including byte progress during download when the upstream size is known.
 
 #### Scenario: Poll job to ready
 
@@ -109,7 +122,8 @@ The system SHALL expose an asynchronous prepare job with a stable identifier and
 
 ### Requirement: Authentication
 
-All OS image endpoints SHALL require a valid UI JWT and SHALL be rate/dos protected, consistent with existing server routes.
+All OS image endpoints SHALL require a valid UI JWT and SHALL be rate/dos protected, consistent with existing server
+routes.
 
 #### Scenario: Missing token
 
@@ -118,7 +132,8 @@ All OS image endpoints SHALL require a valid UI JWT and SHALL be rate/dos protec
 
 ### Requirement: Fleet entry point
 
-The UI SHALL offer a "Download OS" action on fleets that opens the provisioning wizard with the fleet and its device type preselected.
+The UI SHALL offer a "Download OS" action on fleets that opens the provisioning wizard with the fleet and its device
+type preselected.
 
 #### Scenario: Launch from fleet
 

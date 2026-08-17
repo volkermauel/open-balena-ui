@@ -50,13 +50,13 @@ interface DeviceType {
 }
 
 interface Fleet {
-  id: number;
+  'id': number;
   'app name': string;
   'is for-device type': number;
 }
 
 interface Release {
-  id: number;
+  'id': number;
   'belongs to-application': number;
   'semver major': number;
   'semver minor': number;
@@ -64,7 +64,7 @@ interface Release {
   'semver prerelease': string;
   'semver build': string;
   'semver revision': number;
-  commit: string;
+  'commit': string;
   'created at': string;
 }
 
@@ -75,17 +75,11 @@ export interface DeviceFilterModalProps {
   currentFilters: DeviceFilterState;
 }
 
-export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
-  open,
-  onClose,
-  onApply,
-  currentFilters,
-}) => {
+export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({ open, onClose, onApply, currentFilters }) => {
   // Local state for the modal form
   const [localFilters, setLocalFilters] = useState<DeviceFilterState>(currentFilters);
 
-  const getNonNullReleaseIds = (ids: Array<number | null>): number[] =>
-    ids.filter((id): id is number => id !== null);
+  const getNonNullReleaseIds = (ids: Array<number | null>): number[] => ids.filter((id): id is number => id !== null);
 
   // Fetch device types using useGetList (cached by react-query)
   const { data: deviceTypesData, isLoading: deviceTypesLoading } = useGetList(
@@ -95,7 +89,7 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
       sort: { field: 'slug', order: 'ASC' },
       filter: {},
     },
-    { enabled: open }
+    { enabled: open },
   );
 
   const deviceTypes = useMemo<DeviceType[]>(
@@ -104,7 +98,7 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
         id: Number(dt.id),
         slug: dt.slug as string,
       })) ?? [],
-    [deviceTypesData]
+    [deviceTypesData],
   );
 
   // Search state for OS version typeahead
@@ -130,7 +124,7 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
       sort: { field: 'os version', order: 'ASC' },
       filter: shouldSearchOsVersions ? { 'os version@ilike': debouncedOsVersionSearch } : {},
     },
-    { enabled: open && shouldSearchOsVersions }
+    { enabled: open && shouldSearchOsVersions },
   );
 
   const osVersionOptions = useMemo<string[]>(() => {
@@ -161,17 +155,17 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
       sort: { field: 'app name', order: 'ASC' },
       filter: fleetsFilter,
     },
-    { enabled: open }
+    { enabled: open },
   );
 
   const fleets = useMemo<Fleet[]>(
     () =>
       fleetsData?.map((fleet) => ({
-        id: Number(fleet.id),
+        'id': Number(fleet.id),
         'app name': fleet['app name'] as string,
         'is for-device type': fleet['is for-device type'] as number,
       })) ?? [],
-    [fleetsData]
+    [fleetsData],
   );
 
   // Build releases filter based on device type and fleet selection
@@ -208,7 +202,7 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
       sort: { field: 'id', order: 'DESC' },
       filter: releasesFilter,
     },
-    { enabled: open }
+    { enabled: open },
   );
 
   // Track filter changes to reset pagination
@@ -291,12 +285,7 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
         releaseIds: releases.map((r) => r.id),
       }));
     }
-  }, [
-    open,
-    releases,
-    localFilters.releaseIds,
-    currentFilters.releaseIds,
-  ]);
+  }, [open, releases, localFilters.releaseIds, currentFilters.releaseIds]);
 
   // Filter releases based on device type and fleet selection
   const filteredReleases = useMemo(() => {
@@ -326,19 +315,13 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
     }
   }, [open, filteredReleases, localFilters.releaseIds]);
 
-  const releaseMatchesSelection = (
-    release: Release,
-    nextDeviceTypeId: number | null,
-    nextFleetId: number | null
-  ) => {
+  const releaseMatchesSelection = (release: Release, nextDeviceTypeId: number | null, nextFleetId: number | null) => {
     if (nextFleetId) {
       return release['belongs to-application'] === nextFleetId;
     }
 
     if (nextDeviceTypeId) {
-      const relevantFleetIds = fleets
-        .filter((f) => f['is for-device type'] === nextDeviceTypeId)
-        .map((f) => f.id);
+      const relevantFleetIds = fleets.filter((f) => f['is for-device type'] === nextDeviceTypeId).map((f) => f.id);
       if (relevantFleetIds.length > 0) {
         return relevantFleetIds.includes(release['belongs to-application']);
       }
@@ -449,10 +432,7 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
     };
 
     // If all releases are selected, don't apply release filter (empty array = no filter)
-    if (
-      filteredReleases.length > 0 &&
-      filteredReleases.every((r) => effectiveReleaseIds.includes(r.id))
-    ) {
+    if (filteredReleases.length > 0 && filteredReleases.every((r) => effectiveReleaseIds.includes(r.id))) {
       filtersToApply.releaseIds = [];
     }
     onApply(filtersToApply);
@@ -473,9 +453,7 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
     return currentIds.includes(releaseId);
   };
 
-  const allReleasesSelected =
-    filteredReleases.length > 0 &&
-    filteredReleases.every((r) => isReleaseSelected(r.id));
+  const allReleasesSelected = filteredReleases.length > 0 && filteredReleases.every((r) => isReleaseSelected(r.id));
 
   const noReleasesSelected = localFilters.releaseIds.includes(null);
 
@@ -495,11 +473,7 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
               <InputLabel shrink sx={{ position: 'relative', transform: 'none', mb: 0.5 }}>
                 Online Status
               </InputLabel>
-              <RadioGroup
-                row
-                value={localFilters.onlineStatus}
-                onChange={handleOnlineStatusChange}
-              >
+              <RadioGroup row value={localFilters.onlineStatus} onChange={handleOnlineStatusChange}>
                 <FormControlLabel value='all' control={<Radio size='small' />} label='All' />
                 <FormControlLabel value='online' control={<Radio size='small' />} label='Online' />
                 <FormControlLabel value='offline' control={<Radio size='small' />} label='Offline' />
@@ -553,23 +527,33 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
                   Running Release
                 </InputLabel>
                 <Box sx={{ display: 'flex', gap: 1 }}>
-                  <Button size='small' variant='outlined' onClick={handleSelectAllReleases} disabled={allReleasesSelected}>
+                  <Button
+                    size='small'
+                    variant='outlined'
+                    onClick={handleSelectAllReleases}
+                    disabled={allReleasesSelected}
+                  >
                     Select All
                   </Button>
-                  <Button size='small' variant='outlined' onClick={handleSelectNoneReleases} disabled={noReleasesSelected}>
+                  <Button
+                    size='small'
+                    variant='outlined'
+                    onClick={handleSelectNoneReleases}
+                    disabled={noReleasesSelected}
+                  >
                     Select None
                   </Button>
                 </Box>
               </Box>
               <Box
                 sx={(theme) => ({
-                  height: 200,
-                  overflowY: 'scroll',
-                  border: '1px solid',
-                  borderColor: theme.palette.text.disabled,
-                  borderRadius: `${theme.shape.borderRadius}px`,
-                  mt: 1,
-                  p: 1,
+                  'height': 200,
+                  'overflowY': 'scroll',
+                  'border': '1px solid',
+                  'borderColor': theme.palette.text.disabled,
+                  'borderRadius': `${theme.shape.borderRadius}px`,
+                  'mt': 1,
+                  'p': 1,
                   '&:hover': {
                     borderColor: theme.palette.text.primary,
                   },
@@ -594,7 +578,11 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
                         label={
                           <ListItemText
                             primary={getSemver(release)}
-                            secondary={release['created at'] ? 'Released on ' + new Date(release['created at']).toLocaleDateString() : ''}
+                            secondary={
+                              release['created at']
+                                ? 'Released on ' + new Date(release['created at']).toLocaleDateString()
+                                : ''
+                            }
                           />
                         }
                         sx={{ display: 'flex', width: '100%', m: 0 }}
@@ -630,9 +618,7 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
               inputValue={osVersionSearch}
               loading={devicesLoading}
               noOptionsText={
-                osVersionSearch.length < 3
-                  ? 'Type at least 3 characters to search'
-                  : 'No OS versions found'
+                osVersionSearch.length < 3 ? 'Type at least 3 characters to search' : 'No OS versions found'
               }
               renderInput={(params) => (
                 <TextField
@@ -673,4 +659,3 @@ export const DeviceFilterModal: React.FC<DeviceFilterModalProps> = ({
 };
 
 export default DeviceFilterModal;
-

@@ -11,8 +11,11 @@
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^6.5.0",
     "@mui/material": "^6.5.0",
+    "archiver": "^7.0.1",
     "assert": "^2.1.0",
     "axios": "^1.12.2",
+    "balena-config-json": "^4.2.7",
+    "balena-image-fs": "^7.6.19",
     "base32-encode": "^2.0.0",
     "bcrypt-ts": "^7.1.0",
     "buffer": "^6.0.3",
@@ -23,10 +26,12 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
     "express-slow-down": "^3.0.0",
+    "file-disk": "^8.0.1",
     "final-form": "^5.0.0",
     "jose": "^6.1.0",
     "jwt-decode": "^4.0.0",
     "micro-key-producer": "^0.8.2",
+    "partitioninfo": "^6.0.3",
     "process": "^0.11.10",
     "prop-types": "^15.8.1",
     "query-string": "^9.3.1",
@@ -45,6 +50,7 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "@types/archiver": "^7.0.0",
     "@types/dateformat": "^5.0.3",
     "@types/dotenv": "^6.1.1",
     "@types/express": "^4.17.23",
@@ -73,6 +79,7 @@
     "build:server": "ncc build server/index.ts -o dist/server -m",
     "preview": "vite preview --outDir dist/client",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/osImage/*.test.ts",
     "prettier": "prettier --write ."
   },
   "eslintConfig": {

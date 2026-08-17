@@ -227,7 +227,7 @@ const DeviceListActions = () => (
           },
         },
         // Hide original text - the text is directly in the button
-        fontSize: 0,
+        'fontSize': 0,
         '&::after': {
           content: '"Save Filters"',
           fontSize: '0.8125rem',

@@ -17,10 +17,7 @@ interface ResolvedLabels {
   releaseLabels: string[];
 }
 
-export const ActiveFilterChips: React.FC<ActiveFilterChipsProps> = ({
-  filters,
-  onRemoveFilter,
-}) => {
+export const ActiveFilterChips: React.FC<ActiveFilterChipsProps> = ({ filters, onRemoveFilter }) => {
   const dataProvider = useDataProvider<DataProvider>();
   const [labels, setLabels] = useState<ResolvedLabels>({
     deviceTypeName: null,
@@ -28,8 +25,7 @@ export const ActiveFilterChips: React.FC<ActiveFilterChipsProps> = ({
     releaseLabels: [],
   });
 
-  const getNonNullReleaseIds = (ids: Array<number | null>): number[] =>
-    ids.filter((id): id is number => id !== null);
+  const getNonNullReleaseIds = (ids: Array<number | null>): number[] => ids.filter((id): id is number => id !== null);
 
   // Resolve IDs to human-readable names
   useEffect(() => {
@@ -224,4 +220,3 @@ export const ActiveFilterChips: React.FC<ActiveFilterChipsProps> = ({
 };
 
 export default ActiveFilterChips;
-
