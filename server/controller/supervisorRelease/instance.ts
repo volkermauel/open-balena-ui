@@ -483,7 +483,12 @@ export const createRelease = async (auth: InstanceAuth, input: CreateReleaseInpu
 
 /** Link an image into a release. */
 export const createReleaseImage = async (auth: InstanceAuth, releaseId: number, imageId: number): Promise<void> => {
-  await odataPost<{ id: number }>(auth, 'release_image', { release: releaseId, image: imageId });
+  // The v6 field for the release FK is `is_part_of__release` (the DB column is
+  // 'is part of-release'); posting `release` silently nulls it → NOT NULL 500.
+  await odataPost<{ id: number }>(auth, 'release_image', {
+    is_part_of__release: releaseId,
+    image: imageId,
+  });
 };
 
 // ---------------------------------------------------------------------------

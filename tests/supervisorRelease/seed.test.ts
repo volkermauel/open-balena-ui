@@ -187,7 +187,7 @@ const seedState = {
   services: [] as { id: number; name: string }[],
   releases: [] as { id: number; rawVersion: string; semver: string }[],
   images: [] as { id: number; hash: string; serviceId: number }[],
-  releaseImages: [] as { release: number; image: number }[],
+  releaseImages: [] as { is_part_of__release: number; image: number }[],
 };
 
 const seedJsonResponse = (status: number, body: unknown): Response =>
@@ -261,7 +261,10 @@ const installSeedFetchMock = (): void => {
         return seedJsonResponse(200, { id: 42 });
       }
       if (resource === 'release_image') {
-        seedState.releaseImages.push({ release: Number(body.release), image: Number(body.image) });
+        seedState.releaseImages.push({
+          is_part_of__release: Number(body.is_part_of__release),
+          image: Number(body.image),
+        });
         return seedJsonResponse(200, { id: 77 });
       }
       if (resource === 'service') {
@@ -426,7 +429,7 @@ test('a cold seed mirrors the tag-resolved digest into the hook-assigned repo', 
 
     // …and the new image is linked into the release.
     const linkPost = instancePosts.find((call) => call.url.includes('/v6/release_image'));
-    assert.deepEqual(JSON.parse(String(linkPost?.body)), { release: 42, image: 11 });
+    assert.deepEqual(JSON.parse(String(linkPost?.body)), { is_part_of__release: 42, image: 11 });
 
     // Every registry write went to the hook-ASSIGNED repo read back after create…
     const registryWrites = seedCalls.filter(
@@ -481,10 +484,10 @@ test('a digest change re-seeds the new image and links it into the existing rele
     assert.equal(JSON.parse(String(imagePosts[1].body)).content_hash, sha('f'));
     // …and it is linked into the EXISTING release (id 42), not a new one.
     const linkPosts = instancePosts.filter((call) => call.url.includes('/v6/release_image'));
-    assert.deepEqual(JSON.parse(String(linkPosts[1].body)), { release: 42, image: 12 });
+    assert.deepEqual(JSON.parse(String(linkPosts[1].body)), { is_part_of__release: 42, image: 12 });
     assert.deepEqual(seedState.releaseImages, [
-      { release: 42, image: 11 },
-      { release: 42, image: 12 },
+      { is_part_of__release: 42, image: 11 },
+      { is_part_of__release: 42, image: 12 },
     ]);
 
     // The new manifest was mirrored and verified at the target.
