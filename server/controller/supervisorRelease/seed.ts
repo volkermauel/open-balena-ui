@@ -61,9 +61,17 @@ export interface SeedResult {
   images: SeedImageResult[];
 }
 
-/** Extract the repository name from a registry image location (`host/v2/<repo>`). */
+/**
+ * Extract the docker repository name from a registry image location:
+ * `host/v2/<name>` -> `v2/<name>`. The `v2/` segment MUST stay — the instance
+ * API's registry-token endpoint only grants scopes for repository names with
+ * more than one path segment (bare `<name>` scopes are silently dropped from
+ * the token, which the registry then answers with 401), and devices pulling
+ * the image derive exactly this name from the location. Registry API paths
+ * therefore become `/v2/v2/<name>/...`, matching the builder's convention.
+ */
 export const repoFromLocation = (location: string): string => {
-  const match = /^[^/]+\/v2\/(.+)$/.exec(location);
+  const match = /^[^/]+\/(v2\/.+)$/.exec(location);
   if (!match) {
     throw new UpstreamError(`Unexpected registry image location: ${location}`);
   }

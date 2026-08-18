@@ -1,0 +1,3 @@
+- [x] 1. `repoFromLocation` keeps the `v2/` segment (location minus host) (done)
+- [x] 2. HostOS fallback repo prefixed; all mirror/scope consumers flow through (done)
+- [x] 3. Tests updated for `v2/`-prefixed repos and `/v2/v2/…` registry paths (156/156) (done)
