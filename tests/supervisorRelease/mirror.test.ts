@@ -1,14 +1,26 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test, beforeEach } from 'node:test';
-import { MirroringNotConfiguredError } from '../../server/controller/supervisorRelease/errors';
-import { mirrorImage, resetRegistryTokens } from '../../server/controller/supervisorRelease/registryMirror';
+import {
+  RegistryMirrorError,
+  SupervisorTagMissingError,
+  UpstreamError,
+} from '../../server/controller/supervisorRelease/errors';
+import {
+  mirrorImageFromSource,
+  resetRegistryTokens,
+  resolveTagDigest,
+  supervisorSourceRegistry,
+} from '../../server/controller/supervisorRelease/registryMirror';
 
 /**
  * Full mirror flow against fixture docker manifests, with fetch fully mocked:
- * no network. Verifies blob existence checks, streamed uploads (POST →
- * Location → PUT ?digest=), manifest-list recursion (children before the
- * list), byte-identical manifest PUTs with the source Content-Type, and the
- * digest verification against the registry's docker-content-digest header.
+ * no network. The source is the anonymous ghcr supervisor mirror (pull token
+ * without any credential). Verifies blob existence checks, streamed uploads
+ * (POST → Location → PUT ?digest=), manifest-list recursion (children before
+ * the list), byte-identical manifest PUTs with the source Content-Type, the
+ * digest verification against the registry's docker-content-digest header, and
+ * digest-by-tag resolution (header, body-hash fallback, missing tag).
  */
 
 const sha = (char: string): string => `sha256:${char.repeat(64)}`;
@@ -39,11 +51,13 @@ const sourceBlobs = new Map<string, string>([
   [sha('a'), 'config-bytes'],
   [sha('b'), 'layer-bytes'],
 ]);
-/** Manifests the fake source registry serves, by digest. */
+/** Manifests the fake source registry serves, by digest or by tag. */
 const sourceManifests = new Map<string, { bytes: string; contentType: string }>([
   [sha('c'), { bytes: JSON.stringify(childManifest), contentType: childManifest.mediaType }],
   [sha('d'), { bytes: JSON.stringify(manifestList), contentType: manifestList.mediaType }],
 ]);
+/** docker-content-digest the fake source reports on manifest-by-tag GETs. */
+let manifestByTagDigest: string | null = sha('d');
 
 const jsonResponse = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -59,17 +73,34 @@ const installFetchMock = (): void => {
     calls.push({ method, url, headers, body: init?.body });
 
     // --- token endpoints ---
+    // Anonymous source pull token (ghcr-style): no Authorization header is sent.
+    if (url.startsWith('https://ghcr.io/token')) {
+      return jsonResponse(200, { token: 'source-token' });
+    }
+    // Instance registry push token, exchanged with the caller's JWT.
     if (url.includes('/auth/v1/token')) {
-      const isSource = url.includes('api.balena-cloud.com');
-      if (isSource && !process.env.BALENACLOUD_TOKEN) {
-        return jsonResponse(401, {});
-      }
       const wantsPush = /pull[,|%2C]+push/.test(decodeURIComponent(url));
       return jsonResponse(200, { token: wantsPush ? 'target-token' : 'source-token' });
     }
 
-    // --- source registry (registry2.balena-cloud.com) ---
-    if (url.startsWith('https://registry2.balena-cloud.com/')) {
+    // --- source registry (the ghcr supervisor mirror) ---
+    if (url.startsWith('https://ghcr.io/')) {
+      const tagMatch = /\/manifests\/([^/?]+)$/.exec(url);
+      if (tagMatch && !tagMatch[1].startsWith('sha256:')) {
+        if (tagMatch[1] === 'v0.0.0-missing') {
+          return jsonResponse(404, { errors: [{ message: 'manifest unknown' }] });
+        }
+        if (!manifestByTagDigest) {
+          return new Response('{"schemaVersion":2}', {
+            status: 200,
+            headers: { 'content-type': childManifest.mediaType },
+          });
+        }
+        return new Response(JSON.stringify(manifestList), {
+          status: 200,
+          headers: { 'content-type': manifestList.mediaType, 'Docker-Content-Digest': manifestByTagDigest },
+        });
+      }
       const manifestMatch = /\/manifests\/(sha256:[a-f0-9]+)$/.exec(url);
       if (manifestMatch) {
         const manifest = sourceManifests.get(manifestMatch[1]);
@@ -133,21 +164,17 @@ const restoreFetch = (): void => {
 beforeEach(() => {
   calls.length = 0;
   presentAtTarget.clear();
+  manifestByTagDigest = sha('d');
   resetRegistryTokens();
-  process.env.BALENACLOUD_TOKEN = 'cloud-jwt';
   process.env.REACT_APP_OPEN_BALENA_API_URL = 'https://api.balena.example.com';
   delete process.env.OPEN_BALENA_REGISTRY_URL;
-});
-
-test('mirroring without BALENACLOUD_TOKEN raises the typed not-configured error', async () => {
-  delete process.env.BALENACLOUD_TOKEN;
-  await assert.rejects(() => mirrorImage('Bearer caller', 'r1', sha('d')), MirroringNotConfiguredError);
+  delete process.env.SUPERVISOR_SOURCE_REGISTRY;
 });
 
 test('mirror copies list children and their blobs before the list, byte-identical', async () => {
   installFetchMock();
   try {
-    const result = await mirrorImage('Bearer caller', 'r1', sha('d'));
+    const result = await mirrorImageFromSource('Bearer caller', 'r1', sha('d'), supervisorSourceRegistry());
 
     assert.deepEqual(result, { repo: 'r1', digest: sha('d') });
 
@@ -175,12 +202,26 @@ test('mirror copies list children and their blobs before the list, byte-identica
         : new TextDecoder().decode(listPutCall.body as Uint8Array);
     assert.equal(putBody, JSON.stringify(manifestList));
 
-    // Pulls authenticated with the server token, pushes with the caller-derived target token.
+    // Pulls authenticated with the anonymous source token, pushes with the caller-derived target token.
     const sourceManifestGet = calls.find(
-      (call) => call.method === 'GET' && call.url.includes(`registry2.balena-cloud.com/v2/r1/manifests/${sha('c')}`),
+      (call) => call.method === 'GET' && call.url.includes(`ghcr.io/v2/r1/manifests/${sha('c')}`),
     )!;
     assert.equal(sourceManifestGet.headers['authorization'], 'Bearer source-token');
     assert.equal(listPutCall.headers['authorization'], 'Bearer target-token');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('source pull tokens are fetched anonymously (no credential sent)', async () => {
+  installFetchMock();
+  try {
+    await mirrorImageFromSource('Bearer caller', 'r1', sha('d'), supervisorSourceRegistry());
+
+    const tokenRequest = calls.find((call) => call.url.startsWith('https://ghcr.io/token'))!;
+    assert.ok(tokenRequest, 'anonymous token endpoint is called');
+    assert.equal(tokenRequest.headers['authorization'], undefined, 'no Authorization header on the token request');
+    assert.match(tokenRequest.url, /scope=repository%3Ar1%3Apull/);
   } finally {
     restoreFetch();
   }
@@ -194,7 +235,7 @@ test('already-present blobs are skipped and manifests are not re-pushed', async 
 
   installFetchMock();
   try {
-    await mirrorImage('Bearer caller', 'r1', sha('d'));
+    await mirrorImageFromSource('Bearer caller', 'r1', sha('d'), supervisorSourceRegistry());
 
     const targetWrites = calls.filter(
       (call) => call.url.includes('registry2.balena.example.com') && (call.method === 'PUT' || call.method === 'POST'),
@@ -208,7 +249,7 @@ test('already-present blobs are skipped and manifests are not re-pushed', async 
 test('blob uploads follow the upload session Location (relative path, absolute URL)', async () => {
   installFetchMock();
   try {
-    await mirrorImage('Bearer caller', 'r1', sha('c'));
+    await mirrorImageFromSource('Bearer caller', 'r1', sha('c'), supervisorSourceRegistry());
 
     const post = calls.find((call) => call.method === 'POST' && call.url.endsWith('/v2/r1/blobs/uploads/'));
     const put = calls.find((call) => call.method === 'PUT' && call.url.includes('/blobs/uploads/'));
@@ -227,9 +268,59 @@ test('blob uploads follow the upload session Location (relative path, absolute U
   }
 });
 
+test('resolveTagDigest takes the docker-content-digest header (case-insensitive)', async () => {
+  installFetchMock();
+  try {
+    // The mock answers the header as `Docker-Content-Digest`; fetch reads case-insensitively.
+    const digest = await resolveTagDigest('r1', 'v19.0.8', supervisorSourceRegistry());
+    assert.equal(digest, sha('d'));
+
+    const manifestGet = calls.find((call) => call.method === 'GET' && call.url.endsWith('/v2/r1/manifests/v19.0.8'))!;
+    assert.ok(manifestGet, 'manifest is fetched by the tag as listed');
+    assert.match(manifestGet.headers['accept'] ?? '', /manifest\.list\.v2\+json/);
+    assert.equal(manifestGet.headers['authorization'], 'Bearer source-token');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('resolveTagDigest falls back to the sha256 of the raw body when the header is absent', async () => {
+  manifestByTagDigest = null; // registry omits docker-content-digest
+  installFetchMock();
+  try {
+    const digest = await resolveTagDigest('r1', '19.0.8', supervisorSourceRegistry());
+    assert.equal(digest, `sha256:${createHash('sha256').update('{"schemaVersion":2}').digest('hex')}`);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('a missing tag raises the actionable tag-missing error', async () => {
+  installFetchMock();
+  try {
+    await assert.rejects(
+      () => resolveTagDigest('r1', 'v0.0.0-missing', supervisorSourceRegistry()),
+      SupervisorTagMissingError,
+    );
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('a failing manifest endpoint raises an upstream error naming the source', async () => {
+  globalThis.fetch = (async () => new Response(null, { status: 500 })) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => resolveTagDigest('r1', 'v19.0.8', supervisorSourceRegistry()),
+      (error: unknown) => error instanceof UpstreamError && error.message.includes('ghcr.io'),
+    );
+  } finally {
+    restoreFetch();
+  }
+});
+
 test('hostile digests inside manifest JSON are rejected before any registry call', async () => {
-  const { inspectManifest, mirrorImage } = await import('../../server/controller/supervisorRelease/registryMirror');
-  const { RegistryMirrorError } = await import('../../server/controller/supervisorRelease/errors');
+  const { inspectManifest } = await import('../../server/controller/supervisorRelease/registryMirror');
 
   // Manifest list with a traversal digest in a child entry
   const hostileList = {
@@ -249,7 +340,6 @@ test('hostile digests inside manifest JSON are rejected before any registry call
   assert.throws(() => inspectManifest(hostileManifest), RegistryMirrorError);
 
   // Entry point still rejects traversal digests outright (no fetch performed)
-  process.env.BALENACLOUD_TOKEN = 'token';
   let fetches = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => {
@@ -257,12 +347,17 @@ test('hostile digests inside manifest JSON are rejected before any registry call
     return new Response(null, { status: 404 });
   }) as typeof fetch;
   try {
-    await assert.rejects(mirrorImage('Bearer caller', 'a/b', '../../evil'), RegistryMirrorError);
-    await assert.rejects(mirrorImage('Bearer caller', 'a/b', 'sha256:xyz'), RegistryMirrorError);
+    await assert.rejects(
+      mirrorImageFromSource('Bearer caller', 'a/b', '../../evil', supervisorSourceRegistry()),
+      RegistryMirrorError,
+    );
+    await assert.rejects(
+      mirrorImageFromSource('Bearer caller', 'a/b', 'sha256:xyz', supervisorSourceRegistry()),
+      RegistryMirrorError,
+    );
     assert.equal(fetches, 0);
   } finally {
     globalThis.fetch = originalFetch;
-    delete process.env.BALENACLOUD_TOKEN;
     resetRegistryTokens();
   }
 });

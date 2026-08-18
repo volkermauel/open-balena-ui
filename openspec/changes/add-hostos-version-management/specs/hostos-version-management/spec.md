@@ -4,14 +4,14 @@
 
 ### Requirement: HostOS version listing
 
-The system SHALL list hostOS versions available in the configured ghcr mirror for a device type, ordered
-newest-first, annotated with whether each version is already imported into the instance.
+The system SHALL list hostOS versions available in the configured ghcr mirror for a device type, ordered newest-first,
+annotated with whether each version is already imported into the instance.
 
 #### Scenario: List versions for a device type
 
 - **WHEN** an authenticated client requests `GET /hostos-releases/versions?deviceType=<slug>`
-- **THEN** the response contains the mirror's versions for that device type's machine, ordered
-    version-descending, each marked `seeded` or not
+- **THEN** the response contains the mirror's versions for that device type's machine, ordered version-descending, each
+  marked `seeded` or not
 
 #### Scenario: Mirror unavailable
 
@@ -25,16 +25,16 @@ newest-first, annotated with whether each version is already imported into the i
 
 ### Requirement: HostOS release import
 
-The system SHALL idempotently import a hostOS version into the instance on request: image row with the
-instance-registry location, release on the device type's hostapp application, and the `release_image` link — created
-in an order that never exposes a release referencing un-mirrored image bytes. Image bytes are copied byte-identically
-by digest from the ghcr mirror into the instance registry.
+The system SHALL idempotently import a hostOS version into the instance on request: image row with the instance-registry
+location, release on the device type's hostapp application, and the `release_image` link — created in an order that
+never exposes a release referencing un-mirrored image bytes. Image bytes are copied byte-identically by digest from the
+ghcr mirror into the instance registry.
 
 #### Scenario: Import a version
 
 - **WHEN** an authenticated client requests `POST /hostos-releases/seed {deviceType, version}`
 - **THEN** the image is mirrored into the instance registry, and a release (status success, semver fields from the
-    version tag) is created or reused on the device type's hostapp app, linked to the image
+  version tag) is created or reused on the device type's hostapp app, linked to the image
 
 #### Scenario: Re-import is a no-op
 
@@ -58,8 +58,8 @@ balenaCloud source with its server-level token; the supervisor feature's behavio
 
 ### Requirement: Import management UI
 
-The webui SHALL present the available hostOS versions for a device type with their import state and an action to
-import a version; imported versions become selectable in the existing Target-OS selector without further UI changes.
+The webui SHALL present the available hostOS versions for a device type with their import state and an action to import
+a version; imported versions become selectable in the existing Target-OS selector without further UI changes.
 
 #### Scenario: Import from the UI
 

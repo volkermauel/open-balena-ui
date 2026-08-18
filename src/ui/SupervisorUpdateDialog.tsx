@@ -147,14 +147,6 @@ const SupervisorUpdateDialog: React.FC<SupervisorUpdateDialogProps> = ({
           {isBulk ? ` — ${deviceIds.length} devices selected` : ''}
         </Typography>
 
-        {catalog && !catalog.mirroringEnabled && (
-          <Alert severity='warning' sx={{ mt: 1, mb: 1 }}>
-            Supervisor image mirroring is not configured on the server (missing <code>BALENACLOUD_TOKEN</code>). Version
-            listing still works, but updating to a version that is not yet <strong>seeded</strong> will fail. Set{' '}
-            <code>BALENACLOUD_TOKEN</code> on the open-balena-ui server to enable one-click supervisor updates.
-          </Alert>
-        )}
-
         {error && (
           <Alert severity='error' sx={{ mt: 1, mb: 1 }}>
             {error}
@@ -179,7 +171,7 @@ const SupervisorUpdateDialog: React.FC<SupervisorUpdateDialogProps> = ({
             )}
             {catalog.versions.map((entry) => {
               const downgrade = isDowngrade(entry.version, currentVersion ?? null);
-              const selectable = !downgrade && (mirroringEnabled || entry.seeded);
+              const selectable = !downgrade;
               return (
                 <ListItemButton
                   key={entry.version}

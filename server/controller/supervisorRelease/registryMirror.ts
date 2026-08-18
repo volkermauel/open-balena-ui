@@ -1,13 +1,12 @@
-import { MirroringNotConfiguredError, RegistryMirrorError, UpstreamError } from './errors';
-import { balenaCloudApiUrl } from './cloud';
+import { createHash } from 'node:crypto';
+import { RegistryMirrorError, SupervisorTagMissingError, UpstreamError } from './errors';
 
 /**
  * Byte-identical image mirroring from a source registry into the instance's
  * own registry.
  *
- * - The source is a parameter: balenaCloud's registry (server-level
- *   `BALENACLOUD_TOKEN` obtains pull tokens) or an anonymous public registry
- *   such as the ghcr hostOS mirror (pull tokens without any credential).
+ * - The source is a parameter: an anonymous public registry such as the ghcr
+ *   supervisor/hostOS mirrors (pull tokens without any credential).
  * - Manifests are copied as raw bytes, PUT by digest with the source
  *   Content-Type, so the digest (and therefore the `content_hash`) stays
  *   valid at the target.
@@ -18,21 +17,92 @@ import { balenaCloudApiUrl } from './cloud';
  *   instance JWT through the instance's `/auth/v1/token`.
  */
 
-export const SOURCE_REGISTRY_HOST = 'registry2.balena-cloud.com';
-
-/** How pulls against a source registry are authorized. */
-export type SourceAuthMode = 'balena-cloud' | 'anonymous';
+/** How pulls against a source registry are authorized (anonymous public mirrors only). */
+export type SourceAuthMode = 'anonymous';
 
 export interface SourceRegistryConfig {
-  /** Registry API base URL without a trailing slash, e.g. `https://registry2.balena-cloud.com`. */
+  /** Registry API base URL without a trailing slash, e.g. `https://ghcr.io`. */
   url: string;
   auth: SourceAuthMode;
 }
 
-/** The supervisor feature's source: balenaCloud's registry with its server-level token. */
-export const SUPERVISOR_SOURCE_REGISTRY: SourceRegistryConfig = {
-  url: `https://${SOURCE_REGISTRY_HOST}`,
-  auth: 'balena-cloud',
+export const DEFAULT_SUPERVISOR_SOURCE_REGISTRY = 'ghcr.io/volkermauel';
+
+export interface SupervisorSource {
+  /** Registry host, e.g. `ghcr.io`. */
+  host: string;
+  /** Registry API base URL without a trailing slash, e.g. `https://ghcr.io`. */
+  url: string;
+  /** Owner path segment below the host ('' when the registry hosts repositories at its root). */
+  owner: string;
+}
+
+/**
+ * Parse a `SUPERVISOR_SOURCE_REGISTRY` value of the form `<registry-host>[/owner]`.
+ * Pure — unit tested. Mirrors the `HOSTOS_SOURCE_REGISTRY` contract: an
+ * `https?://` scheme prefix (`http://` is preserved, anything else becomes
+ * `https`) and trailing slashes are ignored. The host must be lowercase and
+ * contain a dot (a `:port` suffix is allowed); at most one lowercase owner
+ * segment may follow. Anything else is a configuration error.
+ */
+export const parseSupervisorSourceRegistry = (value: string): SupervisorSource => {
+  const normalized = value.trim().replace(/\/+$/, '');
+  const scheme = /^http:\/\//i.test(normalized) ? 'http' : 'https';
+  const withoutScheme = normalized.replace(/^https?:\/\//i, '');
+  const segments = withoutScheme.split('/');
+  const host = segments[0] ?? '';
+  const owner = segments.length > 1 ? segments[1] : '';
+
+  const hostValid = /^[a-z0-9.-]+(:\d+)?$/.test(host) && host.includes('.');
+  const ownerValid = segments.length <= 2 && (segments.length === 1 || /^[a-z0-9][a-z0-9_-]*$/.test(owner));
+  const noEmptySegments = segments.every((segment) => segment.length > 0);
+
+  if (!hostValid || !ownerValid || !noEmptySegments) {
+    throw new RegistryMirrorError(
+      `SUPERVISOR_SOURCE_REGISTRY must be of the form <registry-host>[/owner], ` +
+        `e.g. ${DEFAULT_SUPERVISOR_SOURCE_REGISTRY}: ${value}`,
+    );
+  }
+
+  return { host, url: `${scheme}://${host}`, owner };
+};
+
+const supervisorSource = (): SupervisorSource =>
+  parseSupervisorSourceRegistry(process.env.SUPERVISOR_SOURCE_REGISTRY || DEFAULT_SUPERVISOR_SOURCE_REGISTRY);
+
+/** The configured supervisor source mirror: anonymous pull tokens, never a credential. */
+export const supervisorSourceRegistry = (): SourceRegistryConfig => ({
+  url: supervisorSource().url,
+  auth: 'anonymous',
+});
+
+/** Repository-path shape accepted for source and target repositories. */
+const REPO_PATH_PATTERN = /^[a-z0-9][a-z0-9/_-]*$/;
+
+/** Source repository of a supervisor arch on the mirror: `<owner>/<arch>-supervisor` (no owner → `<arch>-supervisor`). */
+export const supervisorSourceRepo = (arch: string): string => {
+  const { owner } = supervisorSource();
+  const repo = owner ? `${owner}/${arch}-supervisor` : `${arch}-supervisor`;
+  if (!REPO_PATH_PATTERN.test(repo)) {
+    throw new RegistryMirrorError(
+      `Invalid supervisor source repository for arch ${arch}: ${repo} (check SUPERVISOR_SOURCE_REGISTRY)`,
+    );
+  }
+  return repo;
+};
+
+/**
+ * Repository path a supervisor arch is mirrored INTO the instance registry at
+ * (fixed per arch, independent of the source owner — same decision as the
+ * hostOS mirror); the image row's location is `<registryHost>/v2/${repo}` and
+ * pulls are digest-pinned via the image `content_hash`.
+ */
+export const supervisorTargetRepo = (arch: string): string => {
+  const repo = `${arch}-supervisor`;
+  if (!REPO_PATH_PATTERN.test(repo)) {
+    throw new RegistryMirrorError(`Invalid supervisor target repository for arch ${arch}: ${repo}`);
+  }
+  return repo;
 };
 
 export const MANIFEST_ACCEPT_HEADER =
@@ -190,9 +260,8 @@ const sourceTokens = new Map<string, CachedToken>();
 
 /**
  * Pull token for a source repository, cached per (auth mode, registry, repo)
- * with a TTL. balenaCloud sources exchange the server-level
- * `BALENACLOUD_TOKEN` for a pull token; anonymous sources (ghcr public
- * packages) fetch a pull token without sending any credential.
+ * with a TTL. Sources are anonymous public registries (ghcr packages): a
+ * pull token is fetched without sending any credential.
  */
 export const getSourceToken = async (source: SourceRegistryConfig, repo: string): Promise<string> => {
   const cacheKey = `${source.auth}|${source.url}|${repo}`;
@@ -201,29 +270,13 @@ export const getSourceToken = async (source: SourceRegistryConfig, repo: string)
     return cached;
   }
 
-  let url: string;
-  let headers: Record<string, string> = {};
-  if (source.auth === 'balena-cloud') {
-    if (!process.env.BALENACLOUD_TOKEN) {
-      throw new MirroringNotConfiguredError();
-    }
-    url =
-      `${balenaCloudApiUrl()}/auth/v1/token?service=${encodeURIComponent(new URL(source.url).host)}` +
-      `&scope=${encodeURIComponent(`repository:${repo}:pull`)}`;
-    headers = { Authorization: `Bearer ${process.env.BALENACLOUD_TOKEN}` };
-  } else {
-    // Anonymous pull token (verified against ghcr: GET <registry>/token?scope=repository:<repo>:pull,
-    // no Authorization header).
-    url = `${source.url}/token?scope=${encodeURIComponent(`repository:${repo}:pull`)}`;
-  }
+  // Anonymous pull token (verified against ghcr: GET <registry>/token?scope=repository:<repo>:pull,
+  // no Authorization header).
+  const url = `${source.url}/token?scope=${encodeURIComponent(`repository:${repo}:pull`)}`;
 
-  const res = await fetch(url, { headers });
+  const res = await fetch(url);
   if (!res.ok) {
-    throw new UpstreamError(
-      source.auth === 'balena-cloud'
-        ? `balenaCloud registry token request failed (${res.status}) — check BALENACLOUD_TOKEN`
-        : `Source registry token request failed (${res.status}) for ${source.url}`,
-    );
+    throw new UpstreamError(`Source registry token request failed (${res.status}) for ${source.url}`, res.status);
   }
 
   const body = (await res.json()) as TokenResponse;
@@ -234,6 +287,42 @@ export const getSourceToken = async (source: SourceRegistryConfig, repo: string)
 
   sourceTokens.set(cacheKey, { token, expiresAt: tokenExpiryMs(token) });
   return token;
+};
+
+/**
+ * Resolve a tag's manifest digest at a source registry: GET the manifest by
+ * tag (Accept: manifest+index types, source pull token) and take the
+ * registry's `docker-content-digest` response header (read case-insensitively);
+ * a registry that omits it gets the sha256 of the raw body. The result is
+ * always digest-validated — it becomes the image row's `content_hash` and the
+ * value mirrored and verified. A missing tag throws SupervisorTagMissingError;
+ * other failures are upstream errors.
+ */
+export const resolveTagDigest = async (repo: string, tag: string, source: SourceRegistryConfig): Promise<string> => {
+  if (!REPO_PATH_PATTERN.test(repo)) {
+    throw new RegistryMirrorError(`Invalid source repository: ${repo}`);
+  }
+  if (!/^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$/.test(tag)) {
+    throw new RegistryMirrorError(`Invalid source tag: ${tag}`);
+  }
+
+  const token = await getSourceToken(source, repo);
+  const res = await fetch(`${source.url}/v2/${repo}/manifests/${encodeURIComponent(tag)}`, {
+    headers: { Accept: MANIFEST_ACCEPT_HEADER, Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 404) {
+    throw new SupervisorTagMissingError(`tag ${tag}`, repo, source.url);
+  }
+  if (!res.ok) {
+    throw new UpstreamError(
+      `Source registry manifest request failed (${res.status}) for ${source.url}/${repo}:${tag}`,
+      res.status,
+    );
+  }
+
+  const bytes = Buffer.from(await res.arrayBuffer());
+  const reported = res.headers.get('docker-content-digest');
+  return assertDigest(reported ?? `sha256:${createHash('sha256').update(bytes).digest('hex')}`);
 };
 
 const targetTokens = new Map<string, CachedToken>();
@@ -495,8 +584,8 @@ export const verifyManifestAtTarget = async (
  * registry, starting at the manifest (list) digest. Recurses into list
  * children and copies every referenced blob; children are pushed before their
  * list. Pulls read `sourceRepo` at the source, writes land at `targetRepo`
- * (defaults to the same path — the supervisor flow); anonymous sources (e.g.
- * the ghcr hostOS mirror) need no credential.
+ * (defaults to the same path); anonymous sources (ghcr public packages)
+ * need no credential.
  */
 export const mirrorImageFromSource = async (
   callerAuthorization: string,
@@ -505,10 +594,6 @@ export const mirrorImageFromSource = async (
   source: SourceRegistryConfig,
   targetRepo = sourceRepo,
 ): Promise<{ repo: string; digest: string }> => {
-  if (source.auth === 'balena-cloud' && !process.env.BALENACLOUD_TOKEN) {
-    throw new MirroringNotConfiguredError();
-  }
-
   if (
     !/^[a-z0-9][a-z0-9/_-]*$/.test(sourceRepo) ||
     !/^[a-z0-9][a-z0-9/_-]*$/.test(targetRepo) ||
@@ -565,15 +650,3 @@ export const mirrorImageFromSource = async (
     return { repo: targetRepo, digest };
   });
 };
-
-/**
- * Copy an image from balenaCloud's registry into the instance registry
- * (the supervisor feature's source). Unchanged behavior: requires
- * `BALENACLOUD_TOKEN`.
- */
-export const mirrorImage = async (
-  callerAuthorization: string,
-  repo: string,
-  digest: string,
-): Promise<{ repo: string; digest: string }> =>
-  mirrorImageFromSource(callerAuthorization, repo, digest, SUPERVISOR_SOURCE_REGISTRY);

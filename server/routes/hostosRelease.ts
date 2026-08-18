@@ -5,7 +5,6 @@ import { hostosSourceRepo } from '../controller/hostosRelease/catalog';
 import {
   HostosNotConfiguredError,
   InstanceApiError,
-  MirroringNotConfiguredError,
   NotFoundError,
   RegistryMirrorError,
   UpstreamError,
@@ -53,10 +52,6 @@ const callerAuth = (req: Request) => ({ authorization: req.headers.authorization
 
 const sendError = (res: Response, error: unknown): void => {
   if (error instanceof HostosNotConfiguredError) {
-    res.status(503).json({ success: false, message: error.message });
-    return;
-  }
-  if (error instanceof MirroringNotConfiguredError) {
     res.status(503).json({ success: false, message: error.message });
     return;
   }

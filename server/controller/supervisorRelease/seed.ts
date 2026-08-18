@@ -1,14 +1,11 @@
 import {
   CatalogVersion,
-  CloudReleaseImage,
-  dedupeAndOrderReleases,
   fetchCloudReleaseComposition,
-  fetchReleaseImages,
-  fetchSupervisorApplication,
-  fetchSupervisorReleases,
+  listMirrorVersions,
+  serviceNameForVersion,
   supervisorAppSlug,
 } from './cloud';
-import { NotFoundError, UpstreamError } from './errors';
+import { NotFoundError, SupervisorTagMissingError, UpstreamError } from './errors';
 import {
   commitForCloudRelease,
   createImage,
@@ -30,7 +27,10 @@ import {
 } from './instance';
 import {
   mirrorImageFromSource,
-  SUPERVISOR_SOURCE_REGISTRY,
+  resolveTagDigest,
+  supervisorSourceRegistry,
+  supervisorSourceRepo,
+  supervisorTargetRepo,
   targetRegistryHost,
   verifyManifestAtTarget,
 } from './registryMirror';
@@ -42,6 +42,10 @@ import {
  *
  * app → services → image METADATA (instance location) → MIRROR bytes →
  * (verify manifest at target) → release → release_image links.
+ *
+ * The image comes from the configured ghcr-style mirror: its manifest digest
+ * (resolved by tag on the mirror) is the image row's content hash — never a
+ * balenaCloud digest, the self-built image is not balenaCloud's build.
  */
 
 export interface SeedImageResult {
@@ -59,10 +63,22 @@ export interface SeedResult {
 export const repoFromLocation = (location: string): string => {
   const match = /^[^/]+\/v2\/(.+)$/.exec(location);
   if (!match) {
-    throw new UpstreamError(`Unexpected balenaCloud image location: ${location}`);
+    throw new UpstreamError(`Unexpected registry image location: ${location}`);
   }
   return match[1];
 };
+
+/**
+ * A supervisor release carries exactly one image: the mirror's build of the
+ * version, identified by the digest resolved from its tag.
+ */
+interface MirrorImage {
+  /** Repository path at the source mirror the bytes are pulled from. */
+  sourceRepo: string;
+  /** Manifest digest on the mirror — the image row's content hash. */
+  digest: string;
+  serviceName: string;
+}
 
 export type SeedPlanStep =
   | 'create-app'
@@ -84,7 +100,7 @@ export interface SeedExistingState {
 
 /**
  * Pure decision of which seed steps remain, given the existing instance
- * state and the cloud catalog facts. Unit tested — the imperative seed below
+ * state and the catalog facts. Unit tested — the imperative seed below
  * follows exactly this order.
  */
 export const planSeedSteps = (
@@ -141,38 +157,13 @@ const withSeedLock = async <T>(key: string, work: () => Promise<T>): Promise<T> 
   }
 };
 
-/** Resolve device type + arch and the cloud catalog for a version listing. */
+/** Resolve device type + arch and the mirror catalog for a version listing. */
 export const resolveCatalogForDeviceType = async (
   auth: InstanceAuth,
   deviceTypeSlug: string,
-): Promise<{ deviceType: DeviceTypeInfo; applicationId: number; versions: CatalogVersion[] }> => {
+): Promise<{ deviceType: DeviceTypeInfo; versions: CatalogVersion[] }> => {
   const deviceType = await getDeviceTypeBySlug(auth, deviceTypeSlug);
-
-  const application = await fetchSupervisorApplication(deviceType.arch);
-  if (!application) {
-    throw new NotFoundError(`balenaCloud has no supervisor application for arch ${deviceType.arch}`);
-  }
-
-  const releases = await fetchSupervisorReleases(application.id);
-  return { deviceType, applicationId: application.id, versions: dedupeAndOrderReleases(releases) };
-};
-
-/** Fetch the cloud images of a specific catalog version. */
-export const fetchCloudImagesForVersion = async (
-  versions: CatalogVersion[],
-  version: string,
-): Promise<{ catalog: CatalogVersion; images: CloudReleaseImage[] }> => {
-  const catalog = versions.find((entry) => entry.semver === version);
-  if (!catalog) {
-    throw new NotFoundError(`Unknown supervisor version ${version} for this device type`);
-  }
-
-  const images = await fetchReleaseImages(catalog.cloudReleaseId);
-  if (images.length === 0) {
-    throw new NotFoundError(`Supervisor version ${version} has no images in the balenaCloud catalog`);
-  }
-
-  return { catalog, images };
+  return { deviceType, versions: await listMirrorVersions(deviceType.arch) };
 };
 
 /**
@@ -187,6 +178,18 @@ const requireSeedId = (id: number | undefined, what: string): number => {
   return id;
 };
 
+/** Release composition from the balenaCloud catalog when known; `{}` otherwise. Best-effort. */
+const compositionForVersion = async (catalog: CatalogVersion): Promise<unknown> => {
+  if (!catalog.cloudReleaseId) {
+    return {};
+  }
+  try {
+    return await fetchCloudReleaseComposition(catalog.cloudReleaseId);
+  } catch {
+    return {};
+  }
+};
+
 export const seedSupervisorRelease = async (
   auth: InstanceAuth,
   deviceTypeSlug: string,
@@ -198,13 +201,16 @@ export const seedSupervisorRelease = async (
     const arch = deviceType.arch;
     const slug = supervisorAppSlug(arch);
 
-    // Cloud catalog for this version (before touching the instance)
-    const cloudApp = await fetchSupervisorApplication(arch);
-    if (!cloudApp) {
-      throw new NotFoundError(`balenaCloud has no supervisor application for arch ${arch}`);
+    // Mirror catalog for this version (before touching the instance)
+    const source = supervisorSourceRegistry();
+    const sourceRepo = supervisorSourceRepo(arch);
+    const catalog = (await listMirrorVersions(arch)).find((entry) => entry.semver === version);
+    if (!catalog) {
+      throw new SupervisorTagMissingError(`version ${version}`, sourceRepo, source.url);
     }
-    const versions = dedupeAndOrderReleases(await fetchSupervisorReleases(cloudApp.id));
-    const { catalog, images } = await fetchCloudImagesForVersion(versions, version);
+    // The mirror's digest of the tag — the identity of the self-built image.
+    const digest = await resolveTagDigest(sourceRepo, catalog.mirrorTag, source);
+    const images: MirrorImage[] = [{ sourceRepo, digest, serviceName: await serviceNameForVersion(catalog) }];
 
     // Existing instance state — lookups only; every creation happens per the plan below.
     let app = await findApplicationBySlug(auth, slug);
@@ -232,14 +238,14 @@ export const seedSupervisorRelease = async (
     const targetRepoByHash = new Map<string, string>();
     const existingImageHashes: string[] = [];
     for (const image of images) {
-      if (imageIdByHash.has(image.contentHash)) {
+      if (imageIdByHash.has(image.digest)) {
         continue;
       }
-      const existingImage = await findImageByContentHash(auth, image.contentHash);
+      const existingImage = await findImageByContentHash(auth, image.digest);
       if (existingImage && existingServiceMatch(existingImage.serviceId, serviceIds)) {
-        imageIdByHash.set(image.contentHash, existingImage.id);
-        targetRepoByHash.set(image.contentHash, repoFromLocation(existingImage.location));
-        existingImageHashes.push(image.contentHash);
+        imageIdByHash.set(image.digest, existingImage.id);
+        targetRepoByHash.set(image.digest, repoFromLocation(existingImage.location));
+        existingImageHashes.push(image.digest);
       }
     }
 
@@ -253,13 +259,11 @@ export const seedSupervisorRelease = async (
     };
 
     const verifyAll = async (): Promise<boolean> => {
-      if (images.some((image) => !targetRepoByHash.has(image.contentHash))) {
+      if (images.some((image) => !targetRepoByHash.has(image.digest))) {
         return false; // an image without a row has no mirrored location yet
       }
       const results = await Promise.all(
-        images.map(async (image) =>
-          verifyManifestAtTarget(targetRepoFor(image.contentHash), image.contentHash, authorization),
-        ),
+        images.map(async (image) => verifyManifestAtTarget(targetRepoFor(image.digest), image.digest, authorization)),
       );
       return results.every((ok) => ok);
     };
@@ -281,7 +285,7 @@ export const seedSupervisorRelease = async (
       },
       {
         serviceNames,
-        imageHashes: images.map((image) => image.contentHash),
+        imageHashes: images.map((image) => image.digest),
         imageCount: images.length,
       },
     );
@@ -309,28 +313,28 @@ export const seedSupervisorRelease = async (
           break;
         case 'create-image-metadata':
           for (const image of images) {
-            if (imageIdByHash.has(image.contentHash)) {
+            if (imageIdByHash.has(image.digest)) {
               continue;
             }
             const serviceId = serviceIds.get(image.serviceName);
             if (!serviceId) {
-              throw new NotFoundError(`No service ${image.serviceName} for image ${repoFromLocation(image.location)}`);
+              throw new NotFoundError(`No service ${image.serviceName} for image ${image.sourceRepo}`);
             }
-            const location = `${registryHost}/v2/${repoFromLocation(image.location)}`;
-            const created = await createImage(auth, serviceId, location, image.contentHash);
-            imageIdByHash.set(image.contentHash, created.id);
+            const location = `${registryHost}/v2/${supervisorTargetRepo(arch)}`;
+            const created = await createImage(auth, serviceId, location, image.digest);
+            imageIdByHash.set(image.digest, created.id);
             // The hook may overwrite the posted location — read back what stuck.
-            targetRepoByHash.set(image.contentHash, repoFromLocation(await getImageLocation(auth, created.id)));
+            targetRepoByHash.set(image.digest, repoFromLocation(await getImageLocation(auth, created.id)));
           }
           break;
         case 'mirror-bytes':
           for (const image of images) {
             await mirrorImageFromSource(
               authorization,
-              repoFromLocation(image.location),
-              image.contentHash,
-              SUPERVISOR_SOURCE_REGISTRY,
-              targetRepoFor(image.contentHash),
+              image.sourceRepo,
+              image.digest,
+              source,
+              targetRepoFor(image.digest),
             );
           }
           if (!(await verifyAll())) {
@@ -344,7 +348,7 @@ export const seedSupervisorRelease = async (
               commit: commitForCloudRelease(catalog.cloudReleaseId, catalog.rawVersion),
               rawVersion: catalog.rawVersion,
               semver: parseSemverFields(catalog.semver),
-              composition: await fetchCloudReleaseComposition(catalog.cloudReleaseId),
+              composition: await compositionForVersion(catalog),
             })
           ).id;
           break;
@@ -352,7 +356,7 @@ export const seedSupervisorRelease = async (
           const release = requireSeedId(releaseId, 'release');
           const linkedImageIds = new Set((await findReleaseImages(auth, release)).map((link) => link.imageId));
           for (const image of images) {
-            const imageId = imageIdByHash.get(image.contentHash);
+            const imageId = imageIdByHash.get(image.digest);
             if (imageId !== undefined && !linkedImageIds.has(imageId)) {
               await createReleaseImage(auth, release, imageId);
             }
@@ -367,7 +371,7 @@ export const seedSupervisorRelease = async (
     return {
       appId: requireSeedId(appId, 'application'),
       releaseId: requireSeedId(releaseId, 'release'),
-      images: images.map((image) => ({ repo: repoFromLocation(image.location), digest: image.contentHash })),
+      images: images.map((image) => ({ repo: targetRepoFor(image.digest), digest: image.digest })),
     };
   });
 };

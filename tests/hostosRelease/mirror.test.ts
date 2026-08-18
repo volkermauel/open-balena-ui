@@ -208,7 +208,6 @@ beforeEach(() => {
   process.env.REACT_APP_OPEN_BALENA_API_URL = 'https://api.balena.example.com';
   delete process.env.OPEN_BALENA_REGISTRY_URL;
   delete process.env.HOSTOS_SOURCE_REGISTRY;
-  delete process.env.BALENACLOUD_TOKEN;
 });
 
 test('mirrorImageFromSource copies from an anonymous source without any credential', async () => {

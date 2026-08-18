@@ -4,11 +4,15 @@
  * used by the other UI server routes.
  */
 
-/** balenaCloud (catalog or registry) could not be read from / copied from. */
+/** balenaCloud (catalog) or a source registry could not be read from / copied from. */
 export class UpstreamError extends Error {
-  constructor(message: string) {
+  /** HTTP status of the failing upstream response when one was received. */
+  public readonly status?: number;
+
+  constructor(message: string, status?: number) {
     super(message);
     this.name = 'UpstreamError';
+    this.status = status;
   }
 }
 
@@ -31,14 +35,19 @@ export class InstanceApiError extends Error {
   }
 }
 
-/** `BALENACLOUD_TOKEN` is not configured: listing works, seeding/mirroring cannot. */
-export class MirroringNotConfiguredError extends Error {
-  constructor() {
+/**
+ * A supervisor version/tag does not exist on the configured mirror repository:
+ * it must be built and published there first (the mirror repository's
+ * supervisor workflow). Extends NotFoundError so routes render it as a 404.
+ */
+export class SupervisorTagMissingError extends NotFoundError {
+  constructor(what: string, repo: string, sourceUrl: string) {
     super(
-      'Supervisor image mirroring is not configured: set the BALENACLOUD_TOKEN environment variable ' +
-        '(a balenaCloud JWT with registry pull access) on the open-balena-ui server.',
+      `Supervisor ${what} not found on the source mirror ${sourceUrl.replace(/^https?:\/\//, '')}/${repo} — ` +
+        'build and publish it via the supervisor workflow of the mirror repository ' +
+        '(SUPERVISOR_SOURCE_REGISTRY)',
     );
-    this.name = 'MirroringNotConfiguredError';
+    this.name = 'SupervisorTagMissingError';
   }
 }
 
