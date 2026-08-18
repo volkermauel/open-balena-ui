@@ -19,13 +19,19 @@ import {
   findAppReleases,
   findApplicationBySlug,
   findImageByContentHash,
+  setImageSize,
   findReleaseImages,
   getDeviceTypeBySlug,
   getImageLocation,
   InstanceAuth,
   parseSemverFields,
 } from '../supervisorRelease/instance';
-import { mirrorImageFromSource, targetRegistryHost, verifyManifestAtTarget } from '../supervisorRelease/registryMirror';
+import {
+  imageCompressedSize,
+  mirrorImageFromSource,
+  targetRegistryHost,
+  verifyManifestAtTarget,
+} from '../supervisorRelease/registryMirror';
 import { repoFromLocation } from '../supervisorRelease/seed';
 
 /**
@@ -49,6 +55,7 @@ export interface HostosSeedResult {
 export type HostosSeedStep =
   | 'create-image-metadata'
   | 'mirror-bytes'
+  | 'set-image-size'
   | 'create-release'
   | 'create-release-image'
   | 'create-release-tag'
@@ -62,6 +69,8 @@ export interface HostosSeedExistingState {
   linkedImageIds: number[];
   hasVersionTag: boolean;
   bytesVerified: boolean;
+  /** The existing image row's compressed size; null while unset. */
+  imageSize: number | null;
 }
 
 /**
@@ -89,6 +98,11 @@ export const planHostosSeedSteps = (existing: HostosSeedExistingState): HostosSe
   }
   if (!existing.bytesVerified) {
     steps.push('mirror-bytes');
+  }
+  // A freshly created row (create-image-metadata above) or an existing row that
+  // never got its size recorded — the Images view renders image_size as mb.
+  if (!existing.imageId || existing.imageSize === null) {
+    steps.push('set-image-size');
   }
   if (!existing.releaseId || !existing.hasVersionTag) {
     steps.push('create-release-tag');
@@ -215,6 +229,7 @@ export const seedHostosRelease = async (
 
     const existingImage = await findImageByContentHash(auth, digest);
     const imageId = existingImage && existingImage.serviceId === service.id ? existingImage.id : undefined;
+    const imageSize = imageId !== undefined ? (existingImage?.imageSize ?? null) : null;
 
     // Target repo: whatever the instance actually stores for this image. The
     // API may assign a server-side location on create (the
@@ -239,6 +254,7 @@ export const seedHostosRelease = async (
       linkedImageIds,
       hasVersionTag,
       bytesVerified,
+      imageSize,
     });
 
     let releaseId = existingRelease?.id;
@@ -268,6 +284,19 @@ export const seedHostosRelease = async (
           if (!(await verifyManifestAtTarget(repo, digest, authorization))) {
             throw new UpstreamError(`Mirroring of hostOS ${version} did not verify at the target registry`);
           }
+          break;
+        }
+        case 'set-image-size': {
+          const image = requireSeedId(createdImageId, 'image');
+          await setImageSize(
+            auth,
+            image,
+            await imageCompressedSize(
+              sourceRepo(hostosSource(), machine),
+              digest,
+              hostosSourceRegistryConfig(hostosSource()),
+            ),
+          );
           break;
         }
         case 'create-release':

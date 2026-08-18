@@ -13,6 +13,7 @@ const completeState = {
   existingReleaseImageIds: [101],
   releaseLinksCurrentImages: true,
   bytesVerified: true,
+  unsizedImageHashes: [],
 };
 
 test('a fully seeded version plans no work', () => {
@@ -34,6 +35,7 @@ test('a cold seed plans every step in link-before-mirror order', () => {
       existingReleaseImageIds: [],
       releaseLinksCurrentImages: false,
       bytesVerified: false,
+      unsizedImageHashes: [],
     },
     { serviceNames: ['core', 'service-relay'], imageHashes: ['sha256:x', 'sha256:y'], imageCount: 2 },
   );
@@ -45,6 +47,7 @@ test('a cold seed plans every step in link-before-mirror order', () => {
     'create-release',
     'create-release-image',
     'mirror-bytes',
+    'set-image-size',
   ]);
 });
 
@@ -54,6 +57,7 @@ test('metadata existing but bytes unverified still mirrors after the release lin
     { serviceNames: ['core'], imageHashes: ['sha256:' + 'a'.repeat(64)], imageCount: 1 },
   );
 
+  // The existing image row already carries its size — only the release and bytes need work.
   assert.deepEqual(steps, ['create-release', 'create-release-image', 'mirror-bytes']);
 });
 
@@ -103,11 +107,21 @@ test('a digest change re-seeds metadata, links the new image, then mirrors bytes
       existingReleaseImageIds: [101], // still the OLD image
       releaseLinksCurrentImages: false, // the tag now resolves to a new digest
       bytesVerified: false,
+      unsizedImageHashes: [],
     },
     { serviceNames: ['supervisor'], imageHashes: ['sha256:' + 'c'.repeat(64)], imageCount: 1 },
   );
 
-  assert.deepEqual(steps, ['create-image-metadata', 'create-release-image', 'mirror-bytes']);
+  assert.deepEqual(steps, ['create-image-metadata', 'create-release-image', 'mirror-bytes', 'set-image-size']);
+});
+
+test('an existing unsized image gets its size recorded without other writes', () => {
+  const steps = planSeedSteps(
+    { ...completeState, unsizedImageHashes: ['sha256:' + 'a'.repeat(64)] },
+    { serviceNames: ['core'], imageHashes: ['sha256:' + 'a'.repeat(64)], imageCount: 1 },
+  );
+
+  assert.deepEqual(steps, ['set-image-size']);
 });
 
 test('repo names are extracted from balenaCloud image locations', () => {
@@ -409,6 +423,11 @@ test('a cold seed mirrors the tag-resolved digest into the hook-assigned repo', 
       instancePosts.map((call) => /\/v6\/([a-z_]+)/.exec(call.url)?.[1]),
       ['organization', 'application', 'service', 'image', 'release', 'release_image'],
     );
+
+    // The size PATCH follows the mirror: config(7) + layer(9) from the source manifest.
+    const sizePatch = seedCalls.find((call) => call.method === 'PATCH' && /\/v6\/image\(/.test(call.url));
+    assert.ok(sizePatch, 'the image size is patched after mirroring');
+    assert.deepEqual(JSON.parse(String(sizePatch?.body)), { image_size: 16 });
 
     // The image row is identified by the MIRROR digest resolved from the tag…
     const imagePost = instancePosts.find((call) => call.url.includes('/v6/image'));

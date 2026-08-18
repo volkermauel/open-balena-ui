@@ -19,6 +19,7 @@ import {
   findApplicationBySlug,
   findDeviceTypeByArch,
   findImageByContentHash,
+  setImageSize,
   findReleaseImages,
   findServiceByName,
   getDeviceTypeBySlug,
@@ -26,6 +27,7 @@ import {
   parseSemverFields,
 } from './instance';
 import {
+  imageCompressedSize,
   mirrorImageFromSource,
   resolveTagDigest,
   supervisorSourceRegistry,
@@ -85,6 +87,7 @@ export type SeedPlanStep =
   | 'create-service'
   | 'create-image-metadata'
   | 'mirror-bytes'
+  | 'set-image-size'
   | 'create-release'
   | 'create-release-image'
   | 'complete';
@@ -98,6 +101,8 @@ export interface SeedExistingState {
   /** Whether the existing release already links exactly the current images (digest unchanged). */
   releaseLinksCurrentImages: boolean;
   bytesVerified: boolean;
+  /** Existing image rows whose `image_size` is still unset. */
+  unsizedImageHashes: string[];
 }
 
 /**
@@ -138,6 +143,14 @@ export const planSeedSteps = (
   }
   if (!existing.bytesVerified) {
     steps.push('mirror-bytes');
+  }
+  // Freshly created rows (create-image-metadata above) and pre-existing unsized
+  // rows both need their compressed size recorded for the Images view.
+  if (
+    existing.unsizedImageHashes.length > 0 ||
+    cloud.imageHashes.some((hash) => !existing.existingImageHashes.includes(hash))
+  ) {
+    steps.push('set-image-size');
   }
   if (steps.length === 0) {
     steps.push('complete');
@@ -251,6 +264,7 @@ export const seedSupervisorRelease = async (
     // is the only source of truth for where bytes must be mirrored to.
     const targetRepoByHash = new Map<string, string>();
     const existingImageHashes: string[] = [];
+    const unsizedImageHashes: string[] = [];
     for (const image of images) {
       if (imageIdByHash.has(image.digest)) {
         continue;
@@ -260,6 +274,9 @@ export const seedSupervisorRelease = async (
         imageIdByHash.set(image.digest, existingImage.id);
         targetRepoByHash.set(image.digest, repoFromLocation(existingImage.location));
         existingImageHashes.push(image.digest);
+        if (existingImage.imageSize === null) {
+          unsizedImageHashes.push(image.digest);
+        }
       }
     }
 
@@ -307,6 +324,7 @@ export const seedSupervisorRelease = async (
         existingReleaseImageIds,
         releaseLinksCurrentImages,
         bytesVerified: await verifyAll(),
+        unsizedImageHashes,
       },
       {
         serviceNames,
@@ -364,6 +382,15 @@ export const seedSupervisorRelease = async (
           }
           if (!(await verifyAll())) {
             throw new UpstreamError(`Mirroring of supervisor ${version} did not verify at the target registry`);
+          }
+          break;
+        case 'set-image-size':
+          for (const image of images) {
+            const imageId = imageIdByHash.get(image.digest);
+            if (imageId === undefined) {
+              continue;
+            }
+            await setImageSize(auth, imageId, await imageCompressedSize(image.sourceRepo, image.digest, source));
           }
           break;
         case 'create-release':
