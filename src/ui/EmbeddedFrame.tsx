@@ -16,30 +16,33 @@ export const EmbeddedFrame: React.FC<EmbeddedFrameProps> = ({
   src,
   srcDoc,
   backgroundColor,
-  minHeight = '400px'
+  minHeight = '400px',
 }) => (
-  <Box sx={{
-    flex: '1',
-    display: 'flex',
-    flexDirection: 'column',
-    minHeight,
-    backgroundColor
-  }}>
-    {(src || srcDoc) && <iframe
-      id={id}
-      title={title}
-      src={src}
-      srcDoc={srcDoc}
-      height="100%"
-      width="100%"
-      style={{
-        flex: '1',
-        position: 'relative',
-        border: 'none'
-      }}
-    />}
+  <Box
+    sx={{
+      flex: '1',
+      display: 'flex',
+      flexDirection: 'column',
+      minHeight,
+      backgroundColor,
+    }}
+  >
+    {(src || srcDoc) && (
+      <iframe
+        id={id}
+        title={title}
+        src={src}
+        srcDoc={srcDoc}
+        height='100%'
+        width='100%'
+        style={{
+          flex: '1',
+          position: 'relative',
+          border: 'none',
+        }}
+      />
+    )}
   </Box>
 );
 
 export default EmbeddedFrame;
-

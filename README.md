@@ -34,6 +34,41 @@ These variables can be supplied through the standard Vite `.env` files (for exam
 `.env.<mode>` when invoking `vite --mode <mode>`). The active mode is already set for the provided `npm run dev` and
 `npm run dev:local` scripts.
 
+### Supervisor updates
+
+Two additional server-side variables configure the supervisor version management feature:
+
+- `BALENACLOUD_TOKEN` A balenaCloud JWT (any account, e.g. a free one) used to pull supervisor images from
+  `registry2.balena-cloud.com` when mirroring them into your instance registry. **Optional**: without it, version
+  listing still works, but seeding/updating to a version that is not yet mirrored fails with a clear notice in the ui.
+- `OPEN_BALENA_REGISTRY_URL` The base URL of your instance registry, e.g. `https://registry2.openbalena.local`.
+  **Optional**: defaults to deriving the registry host from `REACT_APP_OPEN_BALENA_API_URL` by replacing the leftmost
+  host label with `registry2` (`api.openbalena.local` → `registry2.openbalena.local`).
+- `BALENACLOUD_API_URL` Base URL of the balenaCloud API used for the public supervisor catalog. **Optional**, defaults
+  to `https://api.balena-cloud.com`.
+
+## Supervisor Version Management
+
+openBalena ships without any supervisor releases, so devices keep the supervisor that was baked into the flashed OS
+image. This ui adds a one-click supervisor update:
+
+- The **device dashboard** shows the current and any pending target supervisor version and offers an "Update Supervisor"
+  dialog listing the available versions for the device's CPU architecture (sourced from balenaCloud's public supervisor
+  catalog, deduplicated and ordered newest-first). Versions older than the device's current one are listed but disabled
+  — open-balena-api rejects supervisor downgrades.
+- The **device list** offers a bulk action for the selected devices (they must share one device type), and the **fleet
+  edit page** can update every device of a fleet (grouped by device type).
+
+On first use of a version, the ui server seeds it into your instance: it creates the public
+`balena_os/<arch>-supervisor` application, services and image metadata with your own user credentials, copies the image
+bytes byte-identically (by manifest digest, config and layers included) from balenaCloud's registry into your instance
+registry, and only then creates the `success` release. Afterwards it sets each device's target supervisor release
+(`should be managed by-release`) with your credentials; the instance API enforces the no-downgrade rule per device and
+the ui reports per-device results.
+
+All `/supervisor-releases/*` endpoints of the ui server require a valid ui JWT; instance writes always run with the
+calling user's token. Validate on a real device before rolling a whole fleet.
+
 ## Exposing Device Connection Endpoints
 
 Each device has a "Connect" button which uses balena image labels to discover available services on that device. To make

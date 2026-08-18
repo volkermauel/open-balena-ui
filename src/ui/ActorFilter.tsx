@@ -83,4 +83,3 @@ const ActorFilter: React.FC<ActorFilterProps> = ({
 };
 
 export default ActorFilter;
-
