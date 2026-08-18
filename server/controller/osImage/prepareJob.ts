@@ -93,9 +93,21 @@ export const getOsImageJob = (jobId: string): OsImageJob | undefined => {
 
 export const getOsImageJobArtifactPath = (jobId: string): string | undefined => jobs.get(jobId)?.artifactPath;
 
-export const toFleetConfigOptions = (request: PrepareOsImageRequest): FleetConfigOptions => ({
+/**
+ * Structural input both request kinds satisfy — `PrepareOsImageRequest` as well as
+ * the config-only `OsConfigRequest` from `request.ts`.
+ */
+type FleetConfigSource = Pick<
+  PrepareOsImageRequest,
+  'deviceType' | 'appId' | 'version' | 'network' | 'appUpdatePollInterval' | 'wifiSsid' | 'wifiKey'
+>;
+
+export const toFleetConfigOptions = (request: FleetConfigSource): FleetConfigOptions => ({
   appId: request.appId,
   version: request.version,
+  // Explicit so mixed-fleet fleets generate the config for the SELECTED device type
+  // rather than openBalena's fallback (the fleet's own device type).
+  deviceType: request.deviceType,
   network: request.network,
   ...(request.appUpdatePollInterval !== undefined ? { appUpdatePollInterval: request.appUpdatePollInterval } : {}),
   ...(request.wifiSsid !== undefined ? { wifiSsid: request.wifiSsid } : {}),
@@ -117,6 +129,17 @@ export const artifactDownloadFilename = (request: PrepareOsImageRequest): string
   const version = sanitizeFilenamePart(request.version, 'os');
   const fleetSlug = sanitizeFilenamePart(request.fleetName, 'fleet');
   return `${deviceType}-${version}-${fleetSlug}.${request.format}`;
+};
+
+/**
+ * Browser-facing download filename for a config-only download:
+ * `<deviceType>-<version>-<sanitized fleetName>-config.json`.
+ */
+export const configDownloadFilename = (request: { deviceType: string; version: string; fleetName: string }): string => {
+  const deviceType = sanitizeFilenamePart(request.deviceType, 'device');
+  const version = sanitizeFilenamePart(request.version, 'os');
+  const fleetSlug = sanitizeFilenamePart(request.fleetName, 'fleet');
+  return `${deviceType}-${version}-${fleetSlug}-config.json`;
 };
 
 const fileExists = async (filePath: string): Promise<boolean> => {

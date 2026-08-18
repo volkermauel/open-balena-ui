@@ -67,6 +67,13 @@ survive a server restart; already prepared artifacts remain available on disk. T
 `appUpdatePollInterval` to `10` (minutes) when the request omits it, and carries the server's `GATEWAY_SSH_PUBLIC_KEYS`
 in `os.sshKeys` when configured.
 
+Wifi credentials are an explicit optional section in the dialog: "Add wifi credentials" reveals the SSID/key fields for
+any network choice (choosing the wifi network implies them), so an ethernet-provisioned image can still carry wifi as a
+fallback. A "Config only" action downloads just the provisioned `config.json` — the same config the image injection
+would embed, gateway SSH keys included — without downloading any image bytes; it is meant for flashers that take the
+config separately (e.g. balenaEtcher). Every config download mints a fresh provisioning API key in your openBalena
+instance and is therefore never cached.
+
 ### Supervisor updates
 
 Server-side variables configuring the supervisor version management feature:

@@ -20,6 +20,10 @@ export const buildDownloadConfigBody = (options: FleetConfigOptions): Record<str
     network: options.network,
   };
 
+  if (options.deviceType !== undefined) {
+    body.deviceType = options.deviceType;
+  }
+
   if (options.appUpdatePollInterval !== undefined) {
     body.appUpdatePollInterval = options.appUpdatePollInterval;
   }

@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -24,9 +25,11 @@ import {
 import { useDataProvider } from 'react-admin';
 import type { DataProvider } from 'react-admin';
 import DownloadIcon from '@mui/icons-material/Download';
+import DescriptionIcon from '@mui/icons-material/Description';
 import type { ResourceRecord } from '../types/resource';
 import {
   downloadOsImageArtifact,
+  downloadOsImageConfig,
   fetchOsImageCacheStatus,
   fetchOsImageJob,
   fetchOsImageVersions,
@@ -103,12 +106,18 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
   const [format, setFormat] = React.useState<OsImageFormat>('zip');
   const [fleetId, setFleetId] = React.useState(initialFleetId !== undefined ? String(initialFleetId) : '');
   const [network, setNetwork] = React.useState<OsImageNetwork>('ethernet');
+  // Wifi credentials are opt-in for every network choice (checkbox below); selecting
+  // the wifi network implies them.
+  const [wifiEnabled, setWifiEnabled] = React.useState(false);
   const [wifiSsid, setWifiSsid] = React.useState('');
   const [wifiKey, setWifiKey] = React.useState('');
   const [appUpdatePollInterval, setAppUpdatePollInterval] = React.useState('');
   const [job, setJob] = React.useState<OsImageJob | null>(null);
   const [jobError, setJobError] = React.useState<string | null>(null);
   const [savedFilename, setSavedFilename] = React.useState<string | null>(null);
+  const [configBusy, setConfigBusy] = React.useState(false);
+  const [configError, setConfigError] = React.useState<string | null>(null);
+  const [configSaved, setConfigSaved] = React.useState<string | null>(null);
   const pollTimer = React.useRef<number | null>(null);
   // Tracks whether the dialog is open so in-flight poll callbacks can stop early (see pollJob).
   const dialogOpenRef = React.useRef(open);
@@ -128,6 +137,9 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
     setJob(null);
     setJobError(null);
     setSavedFilename(null);
+    setConfigBusy(false);
+    setConfigError(null);
+    setConfigSaved(null);
   };
 
   React.useEffect(() => {
@@ -292,7 +304,8 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
         fleetName: typeof selectedFleet['app name'] === 'string' ? selectedFleet['app name'] : String(selectedFleet.id),
         network,
         ...(appUpdatePollInterval.trim().length > 0 ? { appUpdatePollInterval: Number(appUpdatePollInterval) } : {}),
-        ...(network === 'wifi' && wifiSsid ? { wifiSsid } : {}),
+        ...(network === 'wifi' || wifiEnabled ? (wifiSsid ? { wifiSsid } : {}) : {}),
+        ...(network === 'wifi' || wifiEnabled ? (wifiKey ? { wifiKey } : {}) : {}),
         ...(network === 'wifi' && wifiKey ? { wifiKey } : {}),
       });
       if (!dialogOpenRef.current) {
@@ -304,6 +317,40 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
     } catch (error) {
       setJob(null);
       setJobError(error instanceof Error ? error.message : 'Failed to start OS image preparation');
+    }
+  };
+
+  const handleDownloadConfig = async () => {
+    const selectedFleet = fleets.find((record) => String(record.id) === fleetId);
+
+    if (!deviceTypeSlug || !version || !selectedFleet) {
+      setConfigError('Device type, version and fleet are required');
+      return;
+    }
+    if (network === 'wifi' && !wifiSsid) {
+      setConfigError('A wifi SSID is required when provisioning for wifi');
+      return;
+    }
+
+    setConfigBusy(true);
+    setConfigError(null);
+    setConfigSaved(null);
+    try {
+      const filename = await downloadOsImageConfig({
+        deviceType: deviceTypeSlug,
+        version,
+        appId: Number(selectedFleet.id),
+        fleetName: typeof selectedFleet['app name'] === 'string' ? selectedFleet['app name'] : String(selectedFleet.id),
+        network,
+        ...(appUpdatePollInterval.trim().length > 0 ? { appUpdatePollInterval: Number(appUpdatePollInterval) } : {}),
+        ...(network === 'wifi' || wifiEnabled ? (wifiSsid ? { wifiSsid } : {}) : {}),
+        ...(network === 'wifi' || wifiEnabled ? (wifiKey ? { wifiKey } : {}) : {}),
+      });
+      setConfigSaved(filename);
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : 'Failed to download the config');
+    } finally {
+      setConfigBusy(false);
     }
   };
 
@@ -330,6 +377,16 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
         {savedFilename && (
           <Alert severity='success' sx={{ mb: 2 }}>
             OS image saved as {savedFilename}
+          </Alert>
+        )}
+        {configError && (
+          <Alert severity='error' sx={{ mb: 2 }}>
+            {configError}
+          </Alert>
+        )}
+        {configSaved && (
+          <Alert severity='success' sx={{ mb: 2 }}>
+            Config saved as {configSaved}
           </Alert>
         )}
 
@@ -420,13 +477,24 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
             </RadioGroup>
           </FormControl>
 
-          {network === 'wifi' && (
+          <FormControlLabel
+            label='Add wifi credentials'
+            control={
+              <Checkbox
+                checked={network === 'wifi' || wifiEnabled}
+                onChange={(event) => setWifiEnabled(event.target.checked)}
+                // Choosing the wifi network implies the credentials; they cannot be turned off there.
+                disabled={busy || configBusy || network === 'wifi'}
+              />
+            }
+          />
+          {(network === 'wifi' || wifiEnabled) && (
             <>
               <TextField
-                label='Wifi SSID'
+                label={network === 'wifi' ? 'Wifi SSID (required)' : 'Wifi SSID'}
                 value={wifiSsid}
                 onChange={(event) => setWifiSsid(event.target.value)}
-                disabled={busy}
+                disabled={busy || configBusy}
                 fullWidth
               />
               <TextField
@@ -434,7 +502,7 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
                 type='password'
                 value={wifiKey}
                 onChange={(event) => setWifiKey(event.target.value)}
-                disabled={busy}
+                disabled={busy || configBusy}
                 fullWidth
               />
             </>
@@ -479,9 +547,17 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
           Close
         </Button>
         <Button
+          variant='outlined'
+          onClick={handleDownloadConfig}
+          disabled={busy || configBusy || !deviceTypeSlug || !version || !fleetId || versionsLoading}
+          startIcon={configBusy ? <CircularProgress size={18} /> : <DescriptionIcon />}
+        >
+          Config only
+        </Button>
+        <Button
           variant='contained'
           onClick={handleDownload}
-          disabled={busy || !deviceTypeSlug || !version || !fleetId || versionsLoading}
+          disabled={busy || configBusy || !deviceTypeSlug || !version || !fleetId || versionsLoading}
           startIcon={<DownloadIcon />}
         >
           Download

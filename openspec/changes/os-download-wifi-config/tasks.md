@@ -1,0 +1,6 @@
+- [x] 1. `parseOsConfigRequest` (prepare-minus-artifact validation) (done)
+- [x] 2. `POST /os-images/config` route: generate + gateway-keys merge + attachment response (done)
+- [x] 3. `deviceType` passthrough in `FleetConfigOptions`/`buildDownloadConfigBody`/`toFleetConfigOptions` (done)
+- [x] 4. Client `downloadOsImageConfig` (object-URL hand-off) (done)
+- [x] 5. Dialog: optional wifi checkbox + fields, Config-only button, alerts (done)
+- [x] 6. Tests: parser, filenames, body mapping (154/154), tsc, build, prettier (done)

@@ -14,6 +14,8 @@ export type OsImageNetwork = 'ethernet' | 'wifi';
 export interface FleetConfigOptions {
   appId: number;
   version: string;
+  /** Passed through so mixed-fleet fleets get a config for the selected device type. */
+  deviceType?: string;
   network: OsImageNetwork;
   appUpdatePollInterval?: number;
   developmentMode?: boolean;

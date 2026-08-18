@@ -17,6 +17,21 @@ export const ACCEPTED_VARIANT: OsImageVariant = 'production';
 /** Devices poll for app updates every 10 minutes unless the request says otherwise. */
 export const DEFAULT_APP_UPDATE_POLL_INTERVAL = 10;
 
+/**
+ * A `POST /os-images/config` request: everything the config generator needs,
+ * minus the artifact-only fields (variant, format) of `PrepareOsImageRequest`.
+ */
+export interface OsConfigRequest {
+  deviceType: string;
+  version: string;
+  appId: number;
+  fleetName: string;
+  network: OsImageNetwork;
+  appUpdatePollInterval?: number;
+  wifiSsid?: string;
+  wifiKey?: string;
+}
+
 interface PrepareOsImageRequestBody {
   deviceType?: unknown;
   version?: unknown;
@@ -89,6 +104,61 @@ export const parsePrepareOsImageRequest = (body: unknown): PrepareOsImageRequest
     version,
     variant: ACCEPTED_VARIANT,
     format: format as OsImageFormat,
+    appId,
+    fleetName,
+    network: network as OsImageNetwork,
+    appUpdatePollInterval,
+    ...(wifiSsid !== undefined ? { wifiSsid } : {}),
+    ...(wifiKey !== undefined ? { wifiKey } : {}),
+  };
+};
+/**
+ * Parse and validate a `POST /os-images/config` body into an `OsConfigRequest` —
+ * the config-only twin of the prepare request (no variant/format: those describe the
+ * image artifact, which a config download does not produce). Wifi credentials are
+ * optional for every network choice: balenaOS embeds them into config.json even when
+ * `network` is `ethernet`, so the device gets wifi as a fallback. Pure — unit tested.
+ */
+export const parseOsConfigRequest = (body: unknown): OsConfigRequest => {
+  const raw = (body && typeof body === 'object' ? body : {}) as PrepareOsImageRequestBody;
+
+  const deviceType = typeof raw.deviceType === 'string' ? raw.deviceType.trim() : '';
+  const version = typeof raw.version === 'string' ? raw.version.trim() : '';
+  const fleetName = typeof raw.fleetName === 'string' ? raw.fleetName.trim() : '';
+  const network = typeof raw.network === 'string' ? raw.network : '';
+  const appId = Number(raw.appId);
+  const appUpdatePollInterval =
+    raw.appUpdatePollInterval === undefined || raw.appUpdatePollInterval === null
+      ? DEFAULT_APP_UPDATE_POLL_INTERVAL
+      : Number(raw.appUpdatePollInterval);
+  const wifiSsid = typeof raw.wifiSsid === 'string' && raw.wifiSsid.length > 0 ? raw.wifiSsid : undefined;
+  const wifiKey = typeof raw.wifiKey === 'string' && raw.wifiKey.length > 0 ? raw.wifiKey : undefined;
+
+  if (!deviceType || !version || !fleetName) {
+    throw new OsImageError(406, 'Request is lacking deviceType, version or fleetName in body context');
+  }
+  if (!isValidDeviceTypeSlug(deviceType)) {
+    throw new OsImageError(406, 'Request has an invalid deviceType in body context');
+  }
+  if (!isValidOsVersion(version)) {
+    throw new OsImageError(406, 'Request has an invalid version in body context');
+  }
+  if (!NETWORKS.includes(network as OsImageNetwork)) {
+    throw new OsImageError(406, 'Request has an invalid network in body context');
+  }
+  if (!Number.isInteger(appId) || appId <= 0) {
+    throw new OsImageError(406, 'Request is lacking a valid appId in body context');
+  }
+  if (!Number.isFinite(appUpdatePollInterval) || appUpdatePollInterval < 1) {
+    throw new OsImageError(406, 'Request has an invalid appUpdatePollInterval in body context');
+  }
+  if (network === 'wifi' && !wifiSsid) {
+    throw new OsImageError(406, 'Request is lacking wifiSsid in body context');
+  }
+
+  return {
+    deviceType,
+    version,
     appId,
     fleetName,
     network: network as OsImageNetwork,
