@@ -104,6 +104,12 @@ export interface SeedExistingState {
  * Pure decision of which seed steps remain, given the existing instance
  * state and the catalog facts. Unit tested — the imperative seed below
  * follows exactly this order.
+ *
+ * The release and its image links are created BEFORE mirroring: the API's
+ * registry-token endpoint grants `pull` on a repo only once its image is
+ * linked to a release (application → release → release_image → image), so
+ * mirroring first would yield a push-only token and every read-back HEAD
+ * at the target registry would fail with 401.
  */
 export const planSeedSteps = (
   existing: SeedExistingState,
@@ -120,9 +126,6 @@ export const planSeedSteps = (
   if (cloud.imageHashes.some((hash) => !existing.existingImageHashes.includes(hash))) {
     steps.push('create-image-metadata');
   }
-  if (!existing.bytesVerified) {
-    steps.push('mirror-bytes');
-  }
   if (!existing.releaseId) {
     steps.push('create-release');
   }
@@ -132,6 +135,9 @@ export const planSeedSteps = (
     !existing.releaseLinksCurrentImages
   ) {
     steps.push('create-release-image');
+  }
+  if (!existing.bytesVerified) {
+    steps.push('mirror-bytes');
   }
   if (steps.length === 0) {
     steps.push('complete');

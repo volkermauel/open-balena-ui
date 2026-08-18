@@ -243,7 +243,7 @@ test('mirrorImageFromSource copies from an anonymous source without any credenti
   }
 });
 
-test('a cold import creates image, mirrors, then release, link and version tag in order', async () => {
+test('a cold import creates image, release and link, then mirrors and tags in order', async () => {
   installFetchMock();
   try {
     const result = await seedHostosRelease({ authorization: 'Bearer caller' }, MACHINE, '7.4.0+rev5');
@@ -297,11 +297,12 @@ test('a cold import creates image, mirrors, then release, link and version tag i
       value: '7.4.0+rev5',
     });
 
-    // The mirror ran before the release POST, from the anonymous source.
+    // The mirror ran after the release POST — the API grants registry `pull` only
+    // once the image is linked to a release, so bytes can only follow the link.
     const manifestPut = calls.find((call) => call.method === 'PUT' && call.url.includes(`/manifests/${sha('e')}`))!;
     assert.ok(
-      calls.indexOf(manifestPut) < calls.indexOf(releasePost),
-      'image bytes are mirrored before the release row is created',
+      calls.indexOf(releasePost) < calls.indexOf(manifestPut),
+      'the release row is created before the image bytes are mirrored',
     );
     const tokenRequest = calls.find((call) => call.url.startsWith('https://ghcr.io/token'))!;
     assert.equal(tokenRequest.headers['authorization'], undefined);
