@@ -106,6 +106,7 @@ export const createHostosRelease = async (
   auth: InstanceAuth,
   input: CreateHostosReleaseInput,
 ): Promise<{ id: number }> => {
+  const now = new Date().toISOString();
   const versionField = await releaseVersionField(auth);
   const body: Record<string, unknown> = {
     belongs_to__application: input.appId,
@@ -114,7 +115,8 @@ export const createHostosRelease = async (
     status: 'success',
     source: 'cloud',
     variant: '',
-    start_timestamp: new Date().toISOString(),
+    start_timestamp: now,
+    update_timestamp: now,
     [versionField]: input.rawVersion,
   };
 

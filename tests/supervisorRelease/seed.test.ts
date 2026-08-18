@@ -419,6 +419,7 @@ test('a cold seed mirrors the tag-resolved digest into the hook-assigned repo', 
     const releaseBody = JSON.parse(String(releasePost?.body));
     assert.equal(releaseBody.raw_version, 'v19.0.8');
     assert.equal(typeof releaseBody.start_timestamp, 'string');
+    assert.equal(typeof releaseBody.update_timestamp, 'string');
     assert.equal(releaseBody.semver_major, 19);
     assert.equal(releaseBody.semver_minor, 0);
     assert.equal(releaseBody.semver_patch, 8);
