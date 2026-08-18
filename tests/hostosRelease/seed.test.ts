@@ -10,6 +10,7 @@ const completeState = {
   linkedImageIds: [11],
   hasVersionTag: true,
   bytesVerified: true,
+  imageSize: 239695015,
 };
 
 test('a fully imported version plans no work', () => {
@@ -23,7 +24,14 @@ test('a cold import plans every step in link-before-mirror order', () => {
       hasVersionTag: false,
       bytesVerified: false,
     }),
-    ['create-image-metadata', 'create-release', 'create-release-image', 'mirror-bytes', 'create-release-tag'],
+    [
+      'create-image-metadata',
+      'create-release',
+      'create-release-image',
+      'mirror-bytes',
+      'set-image-size',
+      'create-release-tag',
+    ],
   );
 });
 
@@ -36,6 +44,7 @@ test('metadata existing but bytes unverified still mirrors after the release lin
       hasVersionTag: false,
       bytesVerified: false,
     }),
+    // The existing image row already carries its size — only release, link, bytes and tag.
     ['create-release', 'create-release-image', 'mirror-bytes', 'create-release-tag'],
   );
 });
@@ -53,6 +62,10 @@ test('release present but image unlinked finishes the link', () => {
 
 test('release present without the version tag finishes the tag', () => {
   assert.deepEqual(planHostosSeedSteps({ ...completeState, hasVersionTag: false }), ['create-release-tag']);
+});
+
+test('an unsized but complete import records the image size', () => {
+  assert.deepEqual(planHostosSeedSteps({ ...completeState, imageSize: null }), ['set-image-size']);
 });
 
 test('release present but bytes missing re-mirrors (registry wiped)', () => {

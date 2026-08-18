@@ -33,6 +33,8 @@ export interface InstanceImage {
   serviceId: number;
   location: string;
   contentHash: string;
+  /** Compressed image size in bytes; null until the seed records it. */
+  imageSize: number | null;
 }
 
 export interface CreateReleaseInput {
@@ -277,9 +279,10 @@ export const findImageByContentHash = async (
     is_a_build_of__service?: { __id?: number } | { __id?: number }[] | number | null;
     is_stored_at__image_location?: string;
     content_hash?: string;
+    image_size?: number | null;
   }>(
     auth,
-    `/v6/image?$select=id,is_a_build_of__service,is_stored_at__image_location,content_hash` +
+    `/v6/image?$select=id,is_a_build_of__service,is_stored_at__image_location,content_hash,image_size` +
       `&$filter=content_hash%20eq%20'${contentHash}'&$top=1`,
   );
 
@@ -301,7 +304,22 @@ export const findImageByContentHash = async (
     serviceId,
     location: row.is_stored_at__image_location ?? '',
     contentHash: row.content_hash ?? contentHash,
+    imageSize: row.image_size ?? null,
   };
+};
+
+/**
+ * Record an image's compressed size (config + layers, in bytes) on its row.
+ * The Images view renders this as the image's size in mb.
+ */
+export const setImageSize = async (auth: InstanceAuth, imageId: number, imageSize: number): Promise<void> => {
+  if (!Number.isInteger(imageSize) || imageSize <= 0) {
+    throw new InstanceApiError(`Invalid image size for image ${imageId}: ${imageSize}`);
+  }
+  const response = await odataPatch(auth, `/v6/image(${imageId})`, { image_size: imageSize });
+  if (!response.ok) {
+    throw new InstanceApiError(`Failed to set image size on image ${imageId} (status ${response.status})`);
+  }
 };
 
 /** Look up release↔image links of a release. */

@@ -1,0 +1,4 @@
+- [x] 1. `imageCompressedSize` helper (source manifests, list recursion) (done)
+- [x] 2. `set-image-size` planner step + executors in both seeds (done)
+- [x] 3. `image_size` in `findImageByContentHash`; `setImageSize` PATCH (done)
+- [x] 4. Planner/imperative tests incl. backfill-of-unsized-row cases (156/156) (done)

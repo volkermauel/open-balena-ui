@@ -584,6 +584,50 @@ const putTargetManifest = async (repo: string, manifest: ManifestCopy, targetTok
   }
 };
 
+/**
+ * Total compressed size of an image (config + all layers, in bytes) as declared
+ * by its manifests at the source registry — manifest lists recurse into every
+ * child. This is the number the Images view renders as the image's size.
+ */
+export const imageCompressedSize = async (
+  sourceRepo: string,
+  digest: string,
+  source: SourceRegistryConfig,
+): Promise<number> => {
+  assertDigest(digest);
+  const token = await getSourceToken(source, sourceRepo);
+  const sourceUrl = source.url.replace(/\/+$/, '');
+  const manifest = await fetchSourceManifest(sourceRepo, digest, sourceUrl, token);
+  const parsed = JSON.parse(manifest.bytes.toString('utf8')) as Record<string, unknown>;
+
+  const sumDescriptors = (entries: unknown): number => {
+    if (!Array.isArray(entries)) {
+      throw new RegistryMirrorError(`Manifest ${digest} has malformed size descriptors`);
+    }
+    let total = 0;
+    for (const entry of entries) {
+      const size = (entry as { size?: unknown })?.size;
+      if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) {
+        throw new RegistryMirrorError(`Manifest ${digest} has a malformed size descriptor`);
+      }
+      total += size;
+    }
+    return total;
+  };
+
+  // Manifest list: the image spans every child platform.
+  const inspection = inspectManifest(parsed);
+  if (inspection.isList) {
+    let total = 0;
+    for (const child of inspection.childManifestDigests) {
+      total += await imageCompressedSize(sourceRepo, child, source);
+    }
+    return total;
+  }
+
+  return sumDescriptors(parsed.config ? [parsed.config] : []) + sumDescriptors(parsed.layers);
+};
+
 /** Verify a manifest digest exists at the target registry. */
 export const verifyManifestAtTarget = async (
   repo: string,

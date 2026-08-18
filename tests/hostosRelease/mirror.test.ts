@@ -93,6 +93,7 @@ const instanceGet = (url: string): Response | null => {
               is_a_build_of__service: { __id: instanceState.imageByHash.serviceId },
               is_stored_at__image_location: location,
               content_hash: sha('e'),
+              image_size: 239695015,
             },
           ]
         : [],
@@ -259,6 +260,11 @@ test('a cold import creates image, release and link, then mirrors and tags in or
       instancePosts.map((call) => /\/v6\/([a-z_]+)/.exec(call.url)?.[1]),
       ['image', 'release', 'release_image', 'release_tag'],
     );
+
+    // The size PATCH follows the mirror: config(7) + layer(9) from the source manifest.
+    const sizePatch = calls.find((call) => call.method === 'PATCH' && /\/v6\/image\(/.test(call.url));
+    assert.ok(sizePatch, 'the image size is patched after mirroring');
+    assert.deepEqual(JSON.parse(String(sizePatch?.body)), { image_size: 16 });
 
     const imagePost = instancePosts[0];
     const imageBody = JSON.parse(String(imagePost.body));
