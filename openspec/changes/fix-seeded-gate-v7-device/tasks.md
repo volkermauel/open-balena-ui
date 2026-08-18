@@ -1,0 +1,3 @@
+- [x] 1. hostOS listing: `seeded` requires the release's `version` tag (resumable half-imports) (done)
+- [x] 2. Supervisor device state read + managed-by PATCH use `/v7/device` (done)
+- [x] 3. Tests: listing tag gate; v7 endpoint + no-v6-device assertion (158/158) (done)
