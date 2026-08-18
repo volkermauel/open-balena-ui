@@ -1,0 +1,4 @@
+- [ ] 1. Reorder `planHostosSeedSteps`: release + link before mirror-bytes (done)
+- [ ] 2. Reorder `planSeedSteps` (supervisor): release + link before mirror-bytes (done)
+- [ ] 3. Update order-asserting tests (hostos + supervisor planner and imperative tests) (done)
+- [ ] 4. `npm test`, `npx tsc --noEmit`, `npx prettier --check .` green (done: 150/150)

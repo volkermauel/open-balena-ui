@@ -16,18 +16,18 @@ test('a fully imported version plans no work', () => {
   assert.deepEqual(planHostosSeedSteps(completeState), ['complete']);
 });
 
-test('a cold import plans every step in crash-safe order', () => {
+test('a cold import plans every step in link-before-mirror order', () => {
   assert.deepEqual(
     planHostosSeedSteps({
       linkedImageIds: [],
       hasVersionTag: false,
       bytesVerified: false,
     }),
-    ['create-image-metadata', 'mirror-bytes', 'create-release', 'create-release-image', 'create-release-tag'],
+    ['create-image-metadata', 'create-release', 'create-release-image', 'mirror-bytes', 'create-release-tag'],
   );
 });
 
-test('metadata existing but bytes unverified still mirrors before the release', () => {
+test('metadata existing but bytes unverified still mirrors after the release link', () => {
   assert.deepEqual(
     planHostosSeedSteps({
       ...completeState,
@@ -36,7 +36,7 @@ test('metadata existing but bytes unverified still mirrors before the release', 
       hasVersionTag: false,
       bytesVerified: false,
     }),
-    ['mirror-bytes', 'create-release', 'create-release-image', 'create-release-tag'],
+    ['create-release', 'create-release-image', 'mirror-bytes', 'create-release-tag'],
   );
 });
 

@@ -26,7 +26,7 @@ test('a fully seeded version plans no work', () => {
   );
 });
 
-test('a cold seed plans every step in crash-safe order', () => {
+test('a cold seed plans every step in link-before-mirror order', () => {
   const steps = planSeedSteps(
     {
       existingServiceNames: [],
@@ -42,19 +42,19 @@ test('a cold seed plans every step in crash-safe order', () => {
     'create-app',
     'create-service',
     'create-image-metadata',
-    'mirror-bytes',
     'create-release',
     'create-release-image',
+    'mirror-bytes',
   ]);
 });
 
-test('metadata existing but bytes unverified still mirrors before release', () => {
+test('metadata existing but bytes unverified still mirrors after the release link', () => {
   const steps = planSeedSteps(
     { ...completeState, releaseId: undefined, bytesVerified: false, existingReleaseImageIds: [] },
     { serviceNames: ['core'], imageHashes: ['sha256:' + 'a'.repeat(64)], imageCount: 1 },
   );
 
-  assert.deepEqual(steps, ['mirror-bytes', 'create-release', 'create-release-image']);
+  assert.deepEqual(steps, ['create-release', 'create-release-image', 'mirror-bytes']);
 });
 
 test('a crashed seed resumes: bytes there, release missing', () => {
@@ -93,7 +93,7 @@ test('missing release_image links are detected by count', () => {
   assert.deepEqual(steps, ['create-release-image']);
 });
 
-test('a digest change re-seeds metadata and bytes, then links the new image', () => {
+test('a digest change re-seeds metadata, links the new image, then mirrors bytes', () => {
   const steps = planSeedSteps(
     {
       appId: 7,
@@ -107,7 +107,7 @@ test('a digest change re-seeds metadata and bytes, then links the new image', ()
     { serviceNames: ['supervisor'], imageHashes: ['sha256:' + 'c'.repeat(64)], imageCount: 1 },
   );
 
-  assert.deepEqual(steps, ['create-image-metadata', 'mirror-bytes', 'create-release-image']);
+  assert.deepEqual(steps, ['create-image-metadata', 'create-release-image', 'mirror-bytes']);
 });
 
 test('repo names are extracted from balenaCloud image locations', () => {

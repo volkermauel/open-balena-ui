@@ -68,6 +68,12 @@ export interface HostosSeedExistingState {
  * Pure decision of which import steps remain, given the existing instance
  * state (a hostOS version is exactly one image). Unit tested — the imperative
  * seed below follows exactly this order.
+ *
+ * The release and its image link are created BEFORE mirroring: the API's
+ * registry-token endpoint grants `pull` on a repo only once its image is
+ * linked to a release (application → release → release_image → image), so
+ * mirroring first would yield a push-only token and every read-back HEAD
+ * at the target registry would fail with 401.
  */
 export const planHostosSeedSteps = (existing: HostosSeedExistingState): HostosSeedStep[] => {
   const steps: HostosSeedStep[] = [];
@@ -75,14 +81,14 @@ export const planHostosSeedSteps = (existing: HostosSeedExistingState): HostosSe
   if (!existing.imageId) {
     steps.push('create-image-metadata');
   }
-  if (!existing.bytesVerified) {
-    steps.push('mirror-bytes');
-  }
   if (!existing.releaseId) {
     steps.push('create-release');
   }
   if (!existing.releaseId || existing.linkedImageIds.length < 1) {
     steps.push('create-release-image');
+  }
+  if (!existing.bytesVerified) {
+    steps.push('mirror-bytes');
   }
   if (!existing.releaseId || !existing.hasVersionTag) {
     steps.push('create-release-tag');
