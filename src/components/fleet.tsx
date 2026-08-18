@@ -32,6 +32,7 @@ import { useParams } from 'react-router';
 import { v4 as uuidv4 } from 'uuid';
 import { useCreateFleet } from '../lib/fleet';
 import DeleteFleetButton from '../ui/DeleteFleetButton';
+import FleetDownloadOsButton from '../ui/FleetDownloadOsButton';
 import Row from '../ui/Row';
 import SemVerChip, { getSemver } from '../ui/SemVerChip';
 import versions from '../versions';
@@ -122,6 +123,9 @@ export const FleetList: React.FC = () => {
 
         <Toolbar>
           <EditButton label='' size='small' variant='outlined' />
+          <FleetDownloadOsButton size='small' variant='outlined'>
+            Download OS
+          </FleetDownloadOsButton>
           <DeleteFleetButton size='small' variant='outlined' />
         </Toolbar>
       </Datagrid>

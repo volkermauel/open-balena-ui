@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import serialize from 'serialize-javascript';
 import registryImageRoutes from './routes/registryImage';
 import hostosReleaseRoutes from './routes/hostosRelease';
+import osImageRoutes from './routes/osImage';
 import supervisorReleaseRoutes from './routes/supervisorRelease';
 
 dotenv.config();
@@ -25,6 +26,7 @@ const CLIENT_ENV_KEYS = [
 const app = express();
 
 app.use('/', registryImageRoutes);
+app.use('/os-images', osImageRoutes);
 app.use('/supervisor-releases', supervisorReleaseRoutes);
 app.use('/hostos-releases', hostosReleaseRoutes);
 app.use(express.static(CLIENT_DIR, { index: false }));

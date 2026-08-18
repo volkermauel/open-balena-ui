@@ -1,0 +1,190 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { buildDownloadConfigBody, generateFleetConfig } from '../../server/controller/osImage/config';
+import { OsImageError } from '../../server/controller/osImage/errors';
+import type { FleetConfigOptions } from '../../server/controller/osImage/cacheStore';
+
+const baseOptions: FleetConfigOptions = {
+  appId: 42,
+  version: '3.2.7',
+  network: 'ethernet',
+};
+
+test('buildDownloadConfigBody omits undefined optional fields', () => {
+  assert.deepEqual(buildDownloadConfigBody(baseOptions), {
+    appId: 42,
+    version: '3.2.7',
+    network: 'ethernet',
+  });
+
+  assert.deepEqual(
+    buildDownloadConfigBody({
+      ...baseOptions,
+      network: 'wifi',
+      appUpdatePollInterval: 10,
+      developmentMode: true,
+      wifiSsid: 'home-network',
+      wifiKey: 'secret',
+    }),
+    {
+      appId: 42,
+      version: '3.2.7',
+      network: 'wifi',
+      appUpdatePollInterval: 10,
+      developmentMode: true,
+      wifiSsid: 'home-network',
+      wifiKey: 'secret',
+    },
+  );
+});
+
+interface CapturedRequest {
+  url: string;
+  init: RequestInit;
+}
+
+const captureFetch = (
+  handler: (url: string, init: RequestInit) => { status: number; body?: unknown; throw?: Error },
+) => {
+  const captured: CapturedRequest[] = [];
+  const fake = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input.toString();
+    const request = { url, init: init ?? {} };
+    captured.push(request);
+    const result = handler(url, request.init);
+    if (result.throw) {
+      throw result.throw;
+    }
+    return new Response(result.body === undefined ? null : JSON.stringify(result.body), {
+      status: result.status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  return { captured, fake };
+};
+
+test('generateFleetConfig forwards the caller JWT to openBalena /download-config', async () => {
+  const previousUrl = process.env.REACT_APP_OPEN_BALENA_API_URL;
+  process.env.REACT_APP_OPEN_BALENA_API_URL = 'https://api.openbalena.local/';
+
+  const { captured, fake } = captureFetch(() => ({
+    status: 200,
+    body: { applicationId: 42, apiKey: 'cfg' },
+  }));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fake;
+
+  try {
+    const config = await generateFleetConfig('Bearer caller-jwt', {
+      ...baseOptions,
+      network: 'wifi',
+      developmentMode: true,
+      wifiSsid: 'net',
+    });
+
+    assert.deepEqual(config, { applicationId: 42, apiKey: 'cfg' });
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].url, 'https://api.openbalena.local/download-config');
+    assert.equal(captured[0].init.method, 'POST');
+    assert.equal((captured[0].init.headers as Record<string, string>).Authorization, 'Bearer caller-jwt');
+    assert.deepEqual(JSON.parse(captured[0].init.body as string) as Record<string, unknown>, {
+      appId: 42,
+      version: '3.2.7',
+      network: 'wifi',
+      developmentMode: true,
+      wifiSsid: 'net',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousUrl === undefined) {
+      delete process.env.REACT_APP_OPEN_BALENA_API_URL;
+    } else {
+      process.env.REACT_APP_OPEN_BALENA_API_URL = previousUrl;
+    }
+  }
+});
+
+test('generateFleetConfig maps 401/403 to a typed 401 error', async () => {
+  const previousUrl = process.env.REACT_APP_OPEN_BALENA_API_URL;
+  process.env.REACT_APP_OPEN_BALENA_API_URL = 'https://api.openbalena.local';
+
+  for (const status of [401, 403]) {
+    const { fake } = captureFetch(() => ({ status }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fake;
+    try {
+      await assert.rejects(generateFleetConfig('Bearer expired', baseOptions), (error: unknown) => {
+        assert.ok(error instanceof OsImageError);
+        assert.equal(error.statusCode, 401);
+        assert.match(error.message, /session may have expired/);
+        return true;
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  delete process.env.REACT_APP_OPEN_BALENA_API_URL;
+  if (previousUrl !== undefined) {
+    process.env.REACT_APP_OPEN_BALENA_API_URL = previousUrl;
+  }
+});
+
+test('generateFleetConfig maps other upstream failures and network errors to 502', async () => {
+  const previousUrl = process.env.REACT_APP_OPEN_BALENA_API_URL;
+  process.env.REACT_APP_OPEN_BALENA_API_URL = 'https://api.openbalena.local';
+
+  const failing = captureFetch(() => ({ status: 400, body: { error: 'bad request' } }));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = failing.fake;
+  try {
+    await assert.rejects(generateFleetConfig('Bearer token', baseOptions), (error: unknown) => {
+      assert.ok(error instanceof OsImageError);
+      assert.equal(error.statusCode, 502);
+      return true;
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const throwing = captureFetch(() => ({ status: 0, throw: new Error('ECONNREFUSED') }));
+  globalThis.fetch = throwing.fake;
+  try {
+    await assert.rejects(generateFleetConfig('Bearer token', baseOptions), (error: unknown) => {
+      assert.ok(error instanceof OsImageError);
+      assert.equal(error.statusCode, 502);
+      assert.match(error.message, /ECONNREFUSED/);
+      return true;
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  delete process.env.REACT_APP_OPEN_BALENA_API_URL;
+  if (previousUrl !== undefined) {
+    process.env.REACT_APP_OPEN_BALENA_API_URL = previousUrl;
+  }
+});
+
+test('generateFleetConfig requires an authorization header and configured API url', async () => {
+  await assert.rejects(generateFleetConfig(undefined, baseOptions), (error: unknown) => {
+    assert.ok(error instanceof OsImageError);
+    assert.equal(error.statusCode, 401);
+    return true;
+  });
+
+  const previousUrl = process.env.REACT_APP_OPEN_BALENA_API_URL;
+  delete process.env.REACT_APP_OPEN_BALENA_API_URL;
+  try {
+    await assert.rejects(generateFleetConfig('Bearer token', baseOptions), (error: unknown) => {
+      assert.ok(error instanceof OsImageError);
+      assert.equal(error.statusCode, 500);
+      return true;
+    });
+  } finally {
+    if (previousUrl !== undefined) {
+      process.env.REACT_APP_OPEN_BALENA_API_URL = previousUrl;
+    }
+  }
+});

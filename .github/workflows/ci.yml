@@ -49,8 +49,11 @@ jobs:
         if: false # ESLint needs added to dev-dependencies and configured properly...
         run: npm run lint
 
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Testing
-        run: npm run test
+        run: npm test
 
       - name: Build
         run: npm run build
