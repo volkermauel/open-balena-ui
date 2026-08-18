@@ -455,6 +455,7 @@ export const createImage = async (
 
 /** Create the supervisor release row (version-field tolerant). */
 export const createRelease = async (auth: InstanceAuth, input: CreateReleaseInput): Promise<{ id: number }> => {
+  const now = new Date().toISOString();
   const versionField = await releaseVersionField(auth);
   const body: Record<string, unknown> = {
     belongs_to__application: input.appId,
@@ -463,7 +464,8 @@ export const createRelease = async (auth: InstanceAuth, input: CreateReleaseInpu
     status: 'success',
     source: 'cloud',
     variant: '',
-    start_timestamp: new Date().toISOString(),
+    start_timestamp: now,
+    update_timestamp: now,
     [versionField]: input.rawVersion,
     semver_major: input.semver.major,
     semver_minor: input.semver.minor,
