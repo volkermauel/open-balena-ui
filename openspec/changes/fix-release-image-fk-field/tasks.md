@@ -1,0 +1,3 @@
+- [x] 1. `createReleaseImage` posts `is_part_of__release` (done)
+- [x] 2. Test mock + assertions updated (hostOS + supervisor) (done)
+- [x] 3. `npm test` 150/150, tsc, prettier green (done)
