@@ -16,6 +16,7 @@
     "axios": "^1.12.2",
     "balena-config-json": "^4.2.7",
     "balena-image-fs": "^7.6.19",
+    "balena-semver": "^4.1.12",
     "base32-encode": "^2.0.0",
     "bcrypt-ts": "^7.1.0",
     "buffer": "^6.0.3",
@@ -79,8 +80,8 @@
     "build:server": "ncc build server/index.ts -o dist/server -m",
     "preview": "vite preview --outDir dist/client",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/osImage/*.test.ts",
-    "prettier": "prettier --write ."
+    "prettier": "prettier --write .",
+    "test": "tsx --test tests/osImage/*.test.ts tests/supervisorRelease/*.test.ts tests/hostosRelease/*.test.ts"
   },
   "eslintConfig": {
     "extends": [

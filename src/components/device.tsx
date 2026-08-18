@@ -50,6 +50,7 @@ import { resolveDeviceTargetRelease } from '../lib/targetRelease';
 import TargetReleaseIcon from '../ui/TargetReleaseIcon';
 import TargetReleaseTooltip from '../ui/TargetReleaseTooltip';
 import DeviceStructuredFilter from '../ui/DeviceStructuredFilter';
+import { SupervisorBulkUpdateButton } from '../ui/SupervisorUpdateButton';
 
 // Get the proper field name for isPinnedOnRelease based on API version
 const isPinnedOnRelease = versions.resource('isPinnedOnRelease', environment.REACT_APP_OPEN_BALENA_API_VERSION);
@@ -88,20 +89,19 @@ export const ReleaseField: React.FC<Omit<FunctionFieldProps<any>, 'render'>> = (
   return (
     <FunctionField
       {...props}
-      render={(record, source) => <ReleaseFieldContent record={record} source={source} theme={theme} />}
+      render={(record, source) =>
+        record && source ? <ReleaseFieldContent record={record} source={source} theme={theme} /> : null
+      }
     />
   );
 };
 
+// Rendered only with non-null record/source (guarded in ReleaseField), so hooks run unconditionally.
 const ReleaseFieldContent: React.FC<{
-  record: Record<string, any> | null;
-  source?: string;
+  record: Record<string, any>;
+  source: string;
   theme: Theme;
 }> = ({ record, source, theme }) => {
-  if (!record || !source) {
-    return null;
-  }
-
   const applicationId = record['belongs to-application'];
   const shouldFetchFleet = Boolean(applicationId);
   const {
@@ -186,6 +186,7 @@ const CustomBulkActionButtons: React.FC<DeleteDeviceButtonProps> = (props) => {
 
   return (
     <React.Fragment>
+      <SupervisorBulkUpdateButton selectedIds={selectedIds} />
       <DeleteDeviceButton size='small' selectedIds={selectedIds} {...props}>
         Delete Selected Devices
       </DeleteDeviceButton>

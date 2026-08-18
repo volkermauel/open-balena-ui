@@ -21,6 +21,7 @@ import {
   minLength,
   required,
   useUnique,
+  useRecordContext,
   RecordContextProvider,
   CreateProps,
   ToolbarProps,
@@ -39,6 +40,7 @@ import environment from '../lib/reactAppEnv';
 import { resolveFleetTargetRelease } from '../lib/targetRelease';
 import TargetReleaseIcon from '../ui/TargetReleaseIcon';
 import TargetReleaseTooltip from '../ui/TargetReleaseTooltip';
+import { SupervisorFleetUpdateButton } from '../ui/SupervisorUpdateButton';
 
 const isPinnedOnRelease = versions.resource('isPinnedOnRelease', environment.REACT_APP_OPEN_BALENA_API_VERSION);
 
@@ -227,14 +229,21 @@ export const FleetCreate: React.FC<CreateProps> = (props) => {
   );
 };
 
-const CustomToolbar: React.FC<ToolbarProps> = (props) => (
-  <Toolbar {...props} style={{ justifyContent: 'space-between' }}>
-    <SaveButton sx={{ flex: 1 }} />
-    <DeleteFleetButton size='large' sx={{ marginLeft: '40px' }}>
-      Delete
-    </DeleteFleetButton>
-  </Toolbar>
-);
+const CustomToolbar: React.FC<ToolbarProps> = (props) => {
+  const record = useRecordContext<{ id: number }>();
+
+  return (
+    <Toolbar {...props} style={{ justifyContent: 'space-between' }}>
+      <SaveButton sx={{ flex: 1 }} />
+      {record?.id != null && (
+        <SupervisorFleetUpdateButton size='large' sx={{ marginLeft: '40px' }} fleetId={record.id} />
+      )}
+      <DeleteFleetButton size='large' sx={{ marginLeft: '20px' }}>
+        Delete
+      </DeleteFleetButton>
+    </Toolbar>
+  );
+};
 
 export const FleetEdit: React.FC = () => {
   const { id: fleetId } = useParams();

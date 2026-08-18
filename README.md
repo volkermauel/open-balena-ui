@@ -57,6 +57,73 @@ identical fleet configurations reuse the previously prepared compressed artifact
 `OS_IMAGE_CACHE_MAX_GB` via least-recently-used eviction. Prepare jobs run asynchronously on the server and do not
 survive a server restart; already prepared artifacts remain available on disk.
 
+### Supervisor updates
+
+Two additional server-side variables configure the supervisor version management feature:
+
+- `BALENACLOUD_TOKEN` A balenaCloud JWT (any account, e.g. a free one) used to pull supervisor images from
+  `registry2.balena-cloud.com` when mirroring them into your instance registry. **Optional**: without it, version
+  listing still works, but seeding/updating to a version that is not yet mirrored fails with a clear notice in the ui.
+- `OPEN_BALENA_REGISTRY_URL` The base URL of your instance registry, e.g. `https://registry2.openbalena.local`.
+  **Optional**: defaults to deriving the registry host from `REACT_APP_OPEN_BALENA_API_URL` by replacing the leftmost
+  host label with `registry2` (`api.openbalena.local` → `registry2.openbalena.local`).
+- `BALENACLOUD_API_URL` Base URL of the balenaCloud API used for the public supervisor catalog. **Optional**, defaults
+  to `https://api.balena-cloud.com`.
+
+### HostOS version import
+
+Two additional server-side variables configure the hostOS version import feature:
+
+- `HOSTOS_SOURCE_REGISTRY` The ghcr mirror to import hostOS hostapp images from, as `<registry-host>[/owner/path]` (an
+  optional `https?://` scheme prefix and trailing slash are ignored; the first segment must be the registry host, a
+  `host:port` is allowed). **Optional**, defaults to `ghcr.io/volkermauel/balenaos-hostapp`; the mirror's machine
+  repositories (`<owner/path>/<deviceTypeSlug>`) are pulled anonymously — no credential is required or sent.
+- `HOSTOS_SOURCE_REPO` The GitHub repository that publishes the mirrored images (`<owner>/<repo>`). **Optional**,
+  defaults to `volkermauel/balena-raspberrypi-abrp`; informational only — the ui links its releases page for catalog
+  cross-checking.
+
+## Supervisor Version Management
+
+openBalena ships without any supervisor releases, so devices keep the supervisor that was baked into the flashed OS
+image. This ui adds a one-click supervisor update:
+
+- The **device dashboard** shows the current and any pending target supervisor version and offers an "Update Supervisor"
+  dialog listing the available versions for the device's CPU architecture (sourced from balenaCloud's public supervisor
+  catalog, deduplicated and ordered newest-first). Versions older than the device's current one are listed but disabled
+  — open-balena-api rejects supervisor downgrades.
+- The **device list** offers a bulk action for the selected devices (they must share one device type), and the **fleet
+  edit page** can update every device of a fleet (grouped by device type).
+
+On first use of a version, the ui server seeds it into your instance: it creates the public
+`balena_os/<arch>-supervisor` application, services and image metadata with your own user credentials, copies the image
+bytes byte-identically (by manifest digest, config and layers included) from balenaCloud's registry into your instance
+registry, and only then creates the `success` release. Afterwards it sets each device's target supervisor release
+(`should be managed by-release`) with your credentials; the instance API enforces the no-downgrade rule per device and
+the ui reports per-device results.
+
+All `/supervisor-releases/*` endpoints of the ui server require a valid ui JWT; instance writes always run with the
+calling user's token. Validate on a real device before rolling a whole fleet.
+
+## HostOS Version Import
+
+The device **Target-OS selector** can only offer hostOS versions whose hostapp releases exist on the instance. The
+**device type list** has an "OS Versions" action per row that opens the versions published at the configured ghcr mirror
+(tags listed newest-first, marked `imported` or `available`) with a one-click **Import**:
+
+- the ui server mirrors the version's hostapp image byte-identically (by manifest digest, config and layers included)
+  from the ghcr mirror into your instance registry — anonymous pulls, no upstream credential needed —
+- creates the image metadata pointing at your registry and, only after the bytes verify, the `success` release on the
+  device type's hostapp application (`admin/<slug>`, must already exist), its `release_image` link and the `version`
+  release tag that makes it appear in the Target-OS selector,
+- after which devices of that device type can in-place-update to it via the built-in selector
+  (`should be operated by-release`); the instance API enforces the no-downgrade rule per device.
+
+Imports are idempotent: re-importing a present version copies nothing and returns the existing release. Tags that are
+not `x.y.z[-suffix]` versions are listed for transparency but cannot be imported.
+
+All `/hostos-releases/*` endpoints of the ui server require a valid ui JWT; instance writes always run with the calling
+user's token. Validate on a real device before rolling a whole fleet.
+
 ## Exposing Device Connection Endpoints
 
 Each device has a "Connect" button which uses balena image labels to discover available services on that device. To make
