@@ -75,7 +75,7 @@
     "preview": "vite preview --outDir dist/client",
     "typecheck": "tsc --noEmit",
     "prettier": "prettier --write .",
-    "test": "tsx --test tests/supervisorRelease/*.test.ts"
+    "test": "tsx --test tests/supervisorRelease/*.test.ts tests/hostosRelease/*.test.ts"
   },
   "eslintConfig": {
     "extends": [

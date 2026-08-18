@@ -16,13 +16,21 @@ import {
   TextInput,
   Toolbar,
   required,
+  useRecordContext,
 } from 'react-admin';
 import { useCreateDeviceType } from '../lib/deviceType';
+import HostosVersionsButton from '../ui/HostosVersionsButton';
 import Row from '../ui/Row';
 import versions from '../versions';
 import environment from '../lib/reactAppEnv';
 
 const deviceTypeAlias = versions.resource('deviceTypeAlias', environment.REACT_APP_OPEN_BALENA_API_VERSION);
+
+/** Row-level hostOS version management action bound to the row's device type slug. */
+const HostosVersionsRowButton: React.FC = () => {
+  const record = useRecordContext<{ id: number | string; slug: string }>();
+  return record?.slug ? <HostosVersionsButton deviceTypeSlug={record.slug} /> : null;
+};
 
 export const DeviceTypeList: React.FC = () => {
   return (
@@ -55,6 +63,7 @@ export const DeviceTypeList: React.FC = () => {
         </ReferenceField>
 
         <Toolbar>
+          <HostosVersionsRowButton />
           <EditButton label='' size='small' variant='outlined' />
           <DeleteButton mutationMode='optimistic' label='' size='small' variant='outlined' />
         </Toolbar>
