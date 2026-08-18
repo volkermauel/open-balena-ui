@@ -13,6 +13,7 @@ import {
   commitForCloudRelease,
   createImage,
   createRelease,
+  getImageLocation,
   createReleaseImage,
   createService,
   createSupervisorApplication,
@@ -27,7 +28,12 @@ import {
   InstanceAuth,
   parseSemverFields,
 } from './instance';
-import { mirrorImage, targetRegistryHost, verifyManifestAtTarget } from './registryMirror';
+import {
+  mirrorImageFromSource,
+  SUPERVISOR_SOURCE_REGISTRY,
+  targetRegistryHost,
+  verifyManifestAtTarget,
+} from './registryMirror';
 
 /**
  * Idempotent seeding of a supervisor version into the instance, in a
@@ -220,6 +226,10 @@ export const seedSupervisorRelease = async (
 
     const registryHost = targetRegistryHost();
     const imageIdByHash = new Map<string, number>();
+    // Target repo per image: the instance may assign locations server-side on
+    // create (image-is-stored-at-location hook), so the row's stored location
+    // is the only source of truth for where bytes must be mirrored to.
+    const targetRepoByHash = new Map<string, string>();
     const existingImageHashes: string[] = [];
     for (const image of images) {
       if (imageIdByHash.has(image.contentHash)) {
@@ -228,14 +238,27 @@ export const seedSupervisorRelease = async (
       const existingImage = await findImageByContentHash(auth, image.contentHash);
       if (existingImage && existingServiceMatch(existingImage.serviceId, serviceIds)) {
         imageIdByHash.set(image.contentHash, existingImage.id);
+        targetRepoByHash.set(image.contentHash, repoFromLocation(existingImage.location));
         existingImageHashes.push(image.contentHash);
       }
     }
 
+    /** Target repo of an image row; a missing entry means the plan order was violated. */
+    const targetRepoFor = (hash: string): string => {
+      const repo = targetRepoByHash.get(hash);
+      if (!repo) {
+        throw new UpstreamError(`Seed plan error: target repo unknown for image ${hash}`);
+      }
+      return repo;
+    };
+
     const verifyAll = async (): Promise<boolean> => {
+      if (images.some((image) => !targetRepoByHash.has(image.contentHash))) {
+        return false; // an image without a row has no mirrored location yet
+      }
       const results = await Promise.all(
         images.map(async (image) =>
-          verifyManifestAtTarget(repoFromLocation(image.location), image.contentHash, authorization),
+          verifyManifestAtTarget(targetRepoFor(image.contentHash), image.contentHash, authorization),
         ),
       );
       return results.every((ok) => ok);
@@ -294,12 +317,21 @@ export const seedSupervisorRelease = async (
               throw new NotFoundError(`No service ${image.serviceName} for image ${repoFromLocation(image.location)}`);
             }
             const location = `${registryHost}/v2/${repoFromLocation(image.location)}`;
-            imageIdByHash.set(image.contentHash, (await createImage(auth, serviceId, location, image.contentHash)).id);
+            const created = await createImage(auth, serviceId, location, image.contentHash);
+            imageIdByHash.set(image.contentHash, created.id);
+            // The hook may overwrite the posted location — read back what stuck.
+            targetRepoByHash.set(image.contentHash, repoFromLocation(await getImageLocation(auth, created.id)));
           }
           break;
         case 'mirror-bytes':
           for (const image of images) {
-            await mirrorImage(authorization, repoFromLocation(image.location), image.contentHash);
+            await mirrorImageFromSource(
+              authorization,
+              repoFromLocation(image.location),
+              image.contentHash,
+              SUPERVISOR_SOURCE_REGISTRY,
+              targetRepoFor(image.contentHash),
+            );
           }
           if (!(await verifyAll())) {
             throw new UpstreamError(`Mirroring of supervisor ${version} did not verify at the target registry`);

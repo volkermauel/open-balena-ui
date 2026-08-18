@@ -2,21 +2,38 @@ import { MirroringNotConfiguredError, RegistryMirrorError, UpstreamError } from 
 import { balenaCloudApiUrl } from './cloud';
 
 /**
- * Byte-identical image mirroring from balenaCloud's registry into the
- * instance's own registry.
+ * Byte-identical image mirroring from a source registry into the instance's
+ * own registry.
  *
+ * - The source is a parameter: balenaCloud's registry (server-level
+ *   `BALENACLOUD_TOKEN` obtains pull tokens) or an anonymous public registry
+ *   such as the ghcr hostOS mirror (pull tokens without any credential).
  * - Manifests are copied as raw bytes, PUT by digest with the source
- *   Content-Type, so the digest (and therefore the balenaCloud `content_hash`)
- *   stays valid at the target.
+ *   Content-Type, so the digest (and therefore the `content_hash`) stays
+ *   valid at the target.
  * - Manifest lists / OCI indices recurse into their child manifests first.
  * - Blobs (config + layers) are HEAD-checked at the target and only copied
  *   when missing, streaming source→target (never buffered in memory).
- * - Pulls are authorized with the server-level `BALENACLOUD_TOKEN`; pushes use
- *   the caller's instance JWT through the instance's `/auth/v1/token`.
+ * - Pulls are authorized with a source pull token; pushes use the caller's
+ *   instance JWT through the instance's `/auth/v1/token`.
  */
 
 export const SOURCE_REGISTRY_HOST = 'registry2.balena-cloud.com';
-const SOURCE_REGISTRY_URL = `https://${SOURCE_REGISTRY_HOST}`;
+
+/** How pulls against a source registry are authorized. */
+export type SourceAuthMode = 'balena-cloud' | 'anonymous';
+
+export interface SourceRegistryConfig {
+  /** Registry API base URL without a trailing slash, e.g. `https://registry2.balena-cloud.com`. */
+  url: string;
+  auth: SourceAuthMode;
+}
+
+/** The supervisor feature's source: balenaCloud's registry with its server-level token. */
+export const SUPERVISOR_SOURCE_REGISTRY: SourceRegistryConfig = {
+  url: `https://${SOURCE_REGISTRY_HOST}`,
+  auth: 'balena-cloud',
+};
 
 export const MANIFEST_ACCEPT_HEADER =
   'application/vnd.docker.distribution.manifest.v2+json, ' +
@@ -171,33 +188,51 @@ const freshToken = (cache: Map<string, CachedToken>, key: string): string | unde
 
 const sourceTokens = new Map<string, CachedToken>();
 
-const getSourceToken = async (repo: string): Promise<string> => {
-  if (!process.env.BALENACLOUD_TOKEN) {
-    throw new MirroringNotConfiguredError();
-  }
-
-  const cached = freshToken(sourceTokens, repo);
+/**
+ * Pull token for a source repository, cached per (auth mode, registry, repo)
+ * with a TTL. balenaCloud sources exchange the server-level
+ * `BALENACLOUD_TOKEN` for a pull token; anonymous sources (ghcr public
+ * packages) fetch a pull token without sending any credential.
+ */
+export const getSourceToken = async (source: SourceRegistryConfig, repo: string): Promise<string> => {
+  const cacheKey = `${source.auth}|${source.url}|${repo}`;
+  const cached = freshToken(sourceTokens, cacheKey);
   if (cached) {
     return cached;
   }
 
-  const url =
-    `${balenaCloudApiUrl()}/auth/v1/token?service=${encodeURIComponent(SOURCE_REGISTRY_HOST)}` +
-    `&scope=${encodeURIComponent(`repository:${repo}:pull`)}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${process.env.BALENACLOUD_TOKEN}` },
-  });
+  let url: string;
+  let headers: Record<string, string> = {};
+  if (source.auth === 'balena-cloud') {
+    if (!process.env.BALENACLOUD_TOKEN) {
+      throw new MirroringNotConfiguredError();
+    }
+    url =
+      `${balenaCloudApiUrl()}/auth/v1/token?service=${encodeURIComponent(new URL(source.url).host)}` +
+      `&scope=${encodeURIComponent(`repository:${repo}:pull`)}`;
+    headers = { Authorization: `Bearer ${process.env.BALENACLOUD_TOKEN}` };
+  } else {
+    // Anonymous pull token (verified against ghcr: GET <registry>/token?scope=repository:<repo>:pull,
+    // no Authorization header).
+    url = `${source.url}/token?scope=${encodeURIComponent(`repository:${repo}:pull`)}`;
+  }
+
+  const res = await fetch(url, { headers });
   if (!res.ok) {
-    throw new UpstreamError(`balenaCloud registry token request failed (${res.status}) — check BALENACLOUD_TOKEN`);
+    throw new UpstreamError(
+      source.auth === 'balena-cloud'
+        ? `balenaCloud registry token request failed (${res.status}) — check BALENACLOUD_TOKEN`
+        : `Source registry token request failed (${res.status}) for ${source.url}`,
+    );
   }
 
   const body = (await res.json()) as TokenResponse;
   const token = body.token ?? body.access_token;
   if (!token) {
-    throw new UpstreamError('balenaCloud registry token response contained no token');
+    throw new UpstreamError('Source registry token response contained no token');
   }
 
-  sourceTokens.set(repo, { token, expiresAt: tokenExpiryMs(token) });
+  sourceTokens.set(cacheKey, { token, expiresAt: tokenExpiryMs(token) });
   return token;
 };
 
@@ -314,15 +349,17 @@ interface ManifestCopy {
 
 /** Copy one blob (config or layer) unless it already exists at the target. Streams, never buffers. */
 const copyBlobIfMissing = async (
-  repo: string,
+  sourceRepo: string,
+  targetRepo: string,
   digest: string,
+  sourceUrl: string,
   sourceToken: string,
   targetToken: string,
 ): Promise<void> => {
   assertDigest(digest);
   const targetBase = targetRegistryUrl();
 
-  const head = await fetch(`${targetBase}/v2/${repo}/blobs/${digest}`, {
+  const head = await fetch(`${targetBase}/v2/${targetRepo}/blobs/${digest}`, {
     method: 'HEAD',
     headers: { Authorization: `Bearer ${targetToken}` },
   });
@@ -334,7 +371,7 @@ const copyBlobIfMissing = async (
   }
 
   const source = await registryFetch(
-    `${SOURCE_REGISTRY_URL}/v2/${repo}/blobs/${digest}`,
+    `${sourceUrl}/v2/${sourceRepo}/blobs/${digest}`,
     { headers: { Authorization: `Bearer ${sourceToken}` } },
     `Source blob fetch ${digest}`,
   );
@@ -344,7 +381,7 @@ const copyBlobIfMissing = async (
 
   // Start the upload session; the Location may be absolute or relative and may
   // point at a different host/scheme than the registry API base.
-  const postUrl = `${targetBase}/v2/${repo}/blobs/uploads/`;
+  const postUrl = `${targetBase}/v2/${targetRepo}/blobs/uploads/`;
   const post = await fetch(postUrl, {
     method: 'POST',
     headers: { Authorization: `Bearer ${targetToken}` },
@@ -394,9 +431,14 @@ const copyBlobIfMissing = async (
 };
 
 /** GET a manifest from the source registry (raw bytes + media type). */
-const fetchSourceManifest = async (repo: string, digest: string, sourceToken: string): Promise<ManifestCopy> => {
+const fetchSourceManifest = async (
+  repo: string,
+  digest: string,
+  sourceUrl: string,
+  sourceToken: string,
+): Promise<ManifestCopy> => {
   const res = await registryFetch(
-    `${SOURCE_REGISTRY_URL}/v2/${repo}/manifests/${digest}`,
+    `${sourceUrl}/v2/${repo}/manifests/${digest}`,
     { headers: { Accept: MANIFEST_ACCEPT_HEADER, Authorization: `Bearer ${sourceToken}` } },
     `Source manifest fetch ${digest}`,
   );
@@ -449,26 +491,35 @@ export const verifyManifestAtTarget = async (
 };
 
 /**
- * Copy an image from balenaCloud's registry into the instance registry,
- * starting at the manifest (list) digest. Recurses into list children and
- * copies every referenced blob; children are pushed before their list.
+ * Copy an image from the configured source registry into the instance
+ * registry, starting at the manifest (list) digest. Recurses into list
+ * children and copies every referenced blob; children are pushed before their
+ * list. Pulls read `sourceRepo` at the source, writes land at `targetRepo`
+ * (defaults to the same path — the supervisor flow); anonymous sources (e.g.
+ * the ghcr hostOS mirror) need no credential.
  */
-export const mirrorImage = async (
+export const mirrorImageFromSource = async (
   callerAuthorization: string,
-  repo: string,
+  sourceRepo: string,
   digest: string,
+  source: SourceRegistryConfig,
+  targetRepo = sourceRepo,
 ): Promise<{ repo: string; digest: string }> => {
-  if (!process.env.BALENACLOUD_TOKEN) {
+  if (source.auth === 'balena-cloud' && !process.env.BALENACLOUD_TOKEN) {
     throw new MirroringNotConfiguredError();
   }
 
-  if (!/^[a-z0-9][a-z0-9/_-]*$/.test(repo) || !/^sha256:[a-f0-9]{64}$/.test(digest)) {
-    throw new RegistryMirrorError(`Invalid repository or digest: ${repo} / ${digest}`);
+  if (
+    !/^[a-z0-9][a-z0-9/_-]*$/.test(sourceRepo) ||
+    !/^[a-z0-9][a-z0-9/_-]*$/.test(targetRepo) ||
+    !/^sha256:[a-f0-9]{64}$/.test(digest)
+  ) {
+    throw new RegistryMirrorError(`Invalid repository or digest: ${sourceRepo} → ${targetRepo} / ${digest}`);
   }
 
-  return withRepoLock(repo, async () => {
-    const sourceToken = await getSourceToken(repo);
-    const targetToken = await getTargetToken(repo, callerAuthorization);
+  return withRepoLock(targetRepo, async () => {
+    const sourceToken = await getSourceToken(source, sourceRepo);
+    const targetToken = await getTargetToken(targetRepo, callerAuthorization);
 
     /** Recursively copy a manifest, deduped by digest: children first for lists, blobs before their manifest. */
     const copiedManifests = new Set<string>();
@@ -480,7 +531,7 @@ export const mirrorImage = async (
       copiedManifests.add(manifestDigest);
 
       // Idempotency: a manifest already present at the target needs no copy.
-      const head = await fetch(`${targetRegistryUrl()}/v2/${repo}/manifests/${manifestDigest}`, {
+      const head = await fetch(`${targetRegistryUrl()}/v2/${targetRepo}/manifests/${manifestDigest}`, {
         method: 'HEAD',
         headers: { Accept: MANIFEST_ACCEPT_HEADER, Authorization: `Bearer ${targetToken}` },
       });
@@ -491,7 +542,7 @@ export const mirrorImage = async (
         throw new RegistryMirrorError(`Target manifest existence check for ${manifestDigest} failed (${head.status})`);
       }
 
-      const manifest = await fetchSourceManifest(repo, manifestDigest, sourceToken);
+      const manifest = await fetchSourceManifest(sourceRepo, manifestDigest, source.url, sourceToken);
       const inspection = inspectManifest(JSON.parse(manifest.bytes.toString('utf8')));
 
       if (inspection.isList) {
@@ -501,16 +552,28 @@ export const mirrorImage = async (
         }
       } else {
         for (const blobDigest of inspection.blobDigests) {
-          await copyBlobIfMissing(repo, blobDigest, sourceToken, targetToken);
+          await copyBlobIfMissing(sourceRepo, targetRepo, blobDigest, source.url, sourceToken, targetToken);
         }
       }
 
-      await putTargetManifest(repo, manifest, targetToken);
+      await putTargetManifest(targetRepo, manifest, targetToken);
     };
 
     // For manifest lists: copy each child manifest first, then the list itself.
     await copyManifest(digest);
 
-    return { repo, digest };
+    return { repo: targetRepo, digest };
   });
 };
+
+/**
+ * Copy an image from balenaCloud's registry into the instance registry
+ * (the supervisor feature's source). Unchanged behavior: requires
+ * `BALENACLOUD_TOKEN`.
+ */
+export const mirrorImage = async (
+  callerAuthorization: string,
+  repo: string,
+  digest: string,
+): Promise<{ repo: string; digest: string }> =>
+  mirrorImageFromSource(callerAuthorization, repo, digest, SUPERVISOR_SOURCE_REGISTRY);

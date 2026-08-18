@@ -100,7 +100,7 @@ const instanceFetch = async (auth: InstanceAuth, path: string, init?: RequestIni
   return res;
 };
 
-const odataGet = async <T>(auth: InstanceAuth, path: string): Promise<T[]> => {
+export const odataGet = async <T>(auth: InstanceAuth, path: string): Promise<T[]> => {
   const res = await instanceFetch(auth, path);
   if (!res.ok) {
     throw new InstanceApiError(await extractErrorMessage(res, `Instance request failed (${res.status})`));
@@ -109,7 +109,7 @@ const odataGet = async <T>(auth: InstanceAuth, path: string): Promise<T[]> => {
   return Array.isArray(body) ? body : (body.d ?? []);
 };
 
-const odataPost = async <T extends { id: number }>(
+export const odataPost = async <T extends { id: number }>(
   auth: InstanceAuth,
   resource: string,
   data: Record<string, unknown>,
@@ -133,7 +133,7 @@ const odataPost = async <T extends { id: number }>(
   return body as T;
 };
 
-const odataPatch = async (auth: InstanceAuth, path: string, data: Record<string, unknown>): Promise<Response> =>
+export const odataPatch = async (auth: InstanceAuth, path: string, data: Record<string, unknown>): Promise<Response> =>
   instanceFetch(auth, path, { method: 'PATCH', body: JSON.stringify(data) });
 
 // ---------------------------------------------------------------------------
@@ -415,6 +415,23 @@ export const createService = async (auth: InstanceAuth, appId: number, serviceNa
     application: appId,
     service_name: serviceName,
   });
+
+/**
+ * Read an image row's stored location. The API may assign the location
+ * server-side on create (the image-is-stored-at-location hook overwrites the
+ * posted value), so callers MUST use this instead of the value they posted.
+ */
+export const getImageLocation = async (auth: InstanceAuth, imageId: number): Promise<string> => {
+  const rows = await odataGet<{ is_stored_at__image_location?: string }>(
+    auth,
+    `/v6/image?$select=is_stored_at__image_location&$filter=id%20eq%20${imageId}&$top=1`,
+  );
+  const location = rows[0]?.is_stored_at__image_location;
+  if (!location) {
+    throw new InstanceApiError(`Image ${imageId} has no is_stored_at__image_location`);
+  }
+  return location;
+};
 
 /** Create image metadata pointing at the instance registry location. */
 export const createImage = async (
