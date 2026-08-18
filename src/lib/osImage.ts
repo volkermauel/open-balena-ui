@@ -161,6 +161,62 @@ export const downloadOsImageArtifact = async (job: OsImageJob): Promise<string> 
 };
 
 /**
+ * Request shape of `POST /os-images/config` — the prepare request minus the
+ * artifact-only variant/format fields.
+ */
+export interface OsConfigRequest {
+  deviceType: string;
+  version: string;
+  appId: number;
+  fleetName: string;
+  network: OsImageNetwork;
+  appUpdatePollInterval?: number;
+  wifiSsid?: string;
+  wifiKey?: string;
+}
+
+/**
+ * Fetch a provisioned config.json (config-only download) with the session JWT and hand
+ * the blob to the browser — same object-URL hand-off as the artifact download.
+ */
+export const downloadOsImageConfig = async (request: OsConfigRequest): Promise<string> => {
+  const response = await fetch('/os-images/config', {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    let message = `Config download failed with status ${response.status}`;
+    try {
+      const body = (await response.json()) as { message?: string };
+      if (body && typeof body.message === 'string' && body.message.length > 0) {
+        message = body.message;
+      }
+    } catch {
+      // Non-JSON error body; keep the generic message.
+    }
+    const error = new Error(message) as OsImageRequestError;
+    error.status = response.status;
+    throw error;
+  }
+
+  const blob = await response.blob();
+  const filename = filenameFromContentDisposition(response.headers.get('content-disposition')) ?? 'config.json';
+  const url = URL.createObjectURL(blob);
+
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+
+  return filename;
+};
+
+/**
  * Merge server-side fleet records into the seeded dropdown list: deduplicated by
  * id with the server records winning over the locally seeded one. Pure — unit tested.
  */

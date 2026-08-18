@@ -7,6 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import {
   artifactDownloadFilename,
+  configDownloadFilename,
   createOsImageJob,
   downloadPristineMirrorImage,
   getOsImageJob,
@@ -73,6 +74,7 @@ test('toFleetConfigOptions maps optional fields but never a development mode', (
   assert.deepEqual(toFleetConfigOptions(baseRequest), {
     appId: 42,
     version: '3.2.7',
+    deviceType: 'raspberrypi4-64',
     network: 'ethernet',
   });
 
@@ -87,6 +89,7 @@ test('toFleetConfigOptions maps optional fields but never a development mode', (
     {
       appId: 42,
       version: '3.2.7',
+      deviceType: 'raspberrypi4-64',
       network: 'wifi',
       appUpdatePollInterval: 10,
       wifiSsid: 'net',
@@ -98,8 +101,18 @@ test('toFleetConfigOptions maps optional fields but never a development mode', (
   assert.deepEqual(toFleetConfigOptions({ ...baseRequest, variant: 'development' }), {
     appId: 42,
     version: '3.2.7',
+    deviceType: 'raspberrypi4-64',
     network: 'ethernet',
   });
+});
+
+test('configDownloadFilename mirrors the artifact naming with a -config.json suffix', () => {
+  assert.equal(configDownloadFilename(baseRequest), 'raspberrypi4-64-3.2.7-My-Fleet-config.json');
+  assert.equal(
+    configDownloadFilename({ ...baseRequest, fleetName: 'prod / fleet #1' }),
+    'raspberrypi4-64-3.2.7-prod-fleet-1-config.json',
+  );
+  assert.equal(configDownloadFilename({ ...baseRequest, fleetName: '///' }), 'raspberrypi4-64-3.2.7-fleet-config.json');
 });
 
 test('job request fields fully determine the artifact cache key', () => {

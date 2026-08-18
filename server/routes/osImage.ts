@@ -6,7 +6,9 @@ import { OsImageError, listOsVersions, osImageCacheStore } from '../controller/o
 import { isValidDeviceTypeSlug, isValidOsVersion } from '../controller/osImage/cacheStore';
 import { createOsImageJob, getOsImageJob, getOsImageJobArtifactPath } from '../controller/osImage/prepareJob';
 import type { OsImageFormat, CachedVersionInfo } from '../controller/osImage/cacheStore';
-import { parsePrepareOsImageRequest } from '../controller/osImage/request';
+import { parseOsConfigRequest, parsePrepareOsImageRequest } from '../controller/osImage/request';
+import { applyGatewaySshKeys, generateFleetConfig, parseGatewaySshPublicKeys } from '../controller/osImage/config';
+import { configDownloadFilename, toFleetConfigOptions } from '../controller/osImage/prepareJob';
 
 interface ErrorResponse {
   success: false;
@@ -110,6 +112,29 @@ router.post<Record<string, never>, PrepareOsImageSuccessResponse | ErrorResponse
       const request = parsePrepareOsImageRequest(req.body);
       const job = createOsImageJob(request, req.headers.authorization);
       res.status(200).json({ jobId: job.jobId });
+    } catch (error) {
+      sendOsImageError(res, error);
+    }
+  },
+);
+router.post<Record<string, never>, Record<string, unknown> | ErrorResponse>(
+  '/config',
+  ...dosProtect,
+  authorize,
+  async (req, res) => {
+    try {
+      const request = parseOsConfigRequest(req.body);
+      // Same generator the image-injection flow uses — including the GATEWAY_SSH_PUBLIC_KEYS
+      // merge — but returned straight to the browser instead of being written into an image.
+      // The config embeds a freshly minted provisioning API key, so it is per-user and is
+      // never cached.
+      const config = applyGatewaySshKeys(
+        await generateFleetConfig(req.headers.authorization, toFleetConfigOptions(request)),
+        parseGatewaySshPublicKeys(process.env.GATEWAY_SSH_PUBLIC_KEYS),
+      );
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="${configDownloadFilename(request)}"`);
+      res.status(200).json(config);
     } catch (error) {
       sendOsImageError(res, error);
     }

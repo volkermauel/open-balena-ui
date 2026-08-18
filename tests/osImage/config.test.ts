@@ -22,6 +22,14 @@ test('buildDownloadConfigBody omits undefined optional fields', () => {
     network: 'ethernet',
   });
 
+  // The device type is passed through so mixed fleets can differ from the fleet's own type.
+  assert.deepEqual(buildDownloadConfigBody({ ...baseOptions, deviceType: 'raspberrypi5' }), {
+    appId: 42,
+    version: '3.2.7',
+    deviceType: 'raspberrypi5',
+    network: 'ethernet',
+  });
+
   assert.deepEqual(
     buildDownloadConfigBody({
       ...baseOptions,
