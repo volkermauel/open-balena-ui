@@ -114,6 +114,7 @@ export const createHostosRelease = async (
     status: 'success',
     source: 'cloud',
     variant: '',
+    start_timestamp: new Date().toISOString(),
     [versionField]: input.rawVersion,
   };
 

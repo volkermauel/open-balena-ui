@@ -463,6 +463,7 @@ export const createRelease = async (auth: InstanceAuth, input: CreateReleaseInpu
     status: 'success',
     source: 'cloud',
     variant: '',
+    start_timestamp: new Date().toISOString(),
     [versionField]: input.rawVersion,
     semver_major: input.semver.major,
     semver_minor: input.semver.minor,

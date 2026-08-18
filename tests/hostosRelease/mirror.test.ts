@@ -289,6 +289,7 @@ test('a cold import creates image, release and link, then mirrors and tags in or
     assert.equal(releaseBody.is_final, false);
     assert.equal(releaseBody.status, 'success');
     assert.equal(releaseBody.commit, hostosCommit(MACHINE, '7.4.0-rev5'));
+    assert.equal(typeof releaseBody.start_timestamp, 'string');
 
     assert.deepEqual(JSON.parse(String(instancePosts[2].body)), { release: 42, image: 11 });
     assert.deepEqual(JSON.parse(String(instancePosts[3].body)), {
