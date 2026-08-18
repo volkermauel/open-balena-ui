@@ -21,10 +21,12 @@ import {
   findImageByContentHash,
   findReleaseImages,
   getDeviceTypeBySlug,
+  getImageLocation,
   InstanceAuth,
   parseSemverFields,
 } from '../supervisorRelease/instance';
 import { mirrorImageFromSource, targetRegistryHost, verifyManifestAtTarget } from '../supervisorRelease/registryMirror';
+import { repoFromLocation } from '../supervisorRelease/seed';
 
 /**
  * Idempotent import of a hostOS version into the instance, in a crash-safe
@@ -208,12 +210,18 @@ export const seedHostosRelease = async (
     const existingImage = await findImageByContentHash(auth, digest);
     const imageId = existingImage && existingImage.serviceId === service.id ? existingImage.id : undefined;
 
-    const repo = hostosTargetRepo(machine);
-    const bytesVerified = await verifyManifestAtTarget(repo, digest, authorization);
+    // Target repo: whatever the instance actually stores for this image. The
+    // API may assign a server-side location on create (the
+    // image-is-stored-at-location hook overwrites the posted value), so bytes
+    // are always mirrored into the row's real repo — never an assumed one.
+    let repo = imageId !== undefined && existingImage?.location ? repoFromLocation(existingImage.location) : undefined;
+    const bytesVerified = repo !== undefined && (await verifyManifestAtTarget(repo, digest, authorization));
     const linkedImageIds = existingRelease
       ? (await findReleaseImages(auth, existingRelease.id)).map((link) => link.imageId)
       : [];
-    const hasVersionTag = existingRelease ? await hasReleaseTag(auth, existingRelease.id, 'version') : false;
+    const hasVersionTag = existingRelease
+      ? await hasReleaseTag(auth, existingRelease.id, 'version', catalog.version)
+      : false;
 
     // The pure planner (unit tested) decides which steps remain; execution
     // follows it exactly, in its order — the tested order IS the real order.
@@ -233,11 +241,17 @@ export const seedHostosRelease = async (
     for (const step of plan) {
       switch (step) {
         case 'create-image-metadata': {
-          const location = `${targetRegistryHost()}/v2/${repo}`;
-          createdImageId = (await createImage(auth, service.id, location, digest)).id;
+          const location = `${targetRegistryHost()}/v2/${hostosTargetRepo(machine)}`;
+          const created = await createImage(auth, service.id, location, digest);
+          createdImageId = created.id;
+          // The hook may overwrite the posted location — read back what stuck.
+          repo = repoFromLocation(await getImageLocation(auth, created.id));
           break;
         }
-        case 'mirror-bytes':
+        case 'mirror-bytes': {
+          if (repo === undefined) {
+            throw new UpstreamError('Seed plan error: target repo unknown before mirroring');
+          }
           await mirrorImageFromSource(
             authorization,
             sourceRepo(hostosSource(), machine),
@@ -249,6 +263,7 @@ export const seedHostosRelease = async (
             throw new UpstreamError(`Mirroring of hostOS ${version} did not verify at the target registry`);
           }
           break;
+        }
         case 'create-release':
           releaseId = (
             await createHostosRelease(auth, {
@@ -280,7 +295,7 @@ export const seedHostosRelease = async (
     return {
       appId: app.id,
       releaseId: requireSeedId(releaseId, 'release'),
-      image: { repo, digest },
+      image: { repo: repo ?? hostosTargetRepo(machine), digest },
     };
   });
 };

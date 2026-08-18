@@ -152,6 +152,12 @@ export const fetchHostosTags = async (machine: string): Promise<string[]> => {
   if (!res.ok) {
     throw new UpstreamError(`HostOS source tags request failed (${res.status}) for ${repo}`);
   }
+  // ghcr signals further pages via a Link header; anything beyond the first
+  // page would be silently truncated, so surface it instead of hiding it.
+  const link = res.headers.get('link');
+  if (link?.includes('rel="next"')) {
+    console.warn(`HostOS source tag list for ${repo} is paginated; showing the newest 1000 tags only`);
+  }
 
   const body = (await res.json().catch(() => null)) as { tags?: unknown } | null;
   if (!body || !Array.isArray(body.tags)) {

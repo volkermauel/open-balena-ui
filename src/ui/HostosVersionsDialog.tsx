@@ -49,7 +49,7 @@ const HostosVersionsDialog: React.FC<HostosVersionsDialogProps> = ({ open, onClo
 
   const loadVersions = React.useCallback(
     (signal: AbortSignal): Promise<void> =>
-      fetchHostosVersions(deviceTypeSlug)
+      fetchHostosVersions(deviceTypeSlug, signal)
         .then((data) => {
           if (!signal.aborted) {
             setCatalog(data);

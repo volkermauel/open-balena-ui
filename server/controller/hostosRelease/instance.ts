@@ -3,6 +3,7 @@ import { InstanceApiError } from './errors';
 import {
   InstanceAuth,
   odataGet,
+  odataPatch,
   odataPost,
   releaseSupportsField,
   releaseVersionField,
@@ -25,16 +26,21 @@ export const findAppService = async (auth: InstanceAuth, appId: number): Promise
   return rows[0] ?? null;
 };
 
-/** Whether a release already carries a tag with the given key. */
-export const hasReleaseTag = async (auth: InstanceAuth, releaseId: number, tagKey: string): Promise<boolean> => {
+/** Whether a release already carries a `version` tag with exactly this value. */
+export const hasReleaseTag = async (
+  auth: InstanceAuth,
+  releaseId: number,
+  tagKey: string,
+  expectedValue: string,
+): Promise<boolean> => {
   if (!/^[a-zA-Z0-9_.-]+$/.test(tagKey)) {
     throw new InstanceApiError(`Invalid release tag key: ${tagKey}`);
   }
-  const rows = await odataGet<{ id: number }>(
+  const rows = await odataGet<{ id: number; value?: string }>(
     auth,
-    `/v6/release_tag?$select=id&$filter=release%20eq%20${releaseId}%20and%20tag_key%20eq%20'${tagKey}'&$top=1`,
+    `/v6/release_tag?$select=id,value&$filter=release%20eq%20${releaseId}%20and%20tag_key%20eq%20'${tagKey}'&$top=1`,
   );
-  return rows.length > 0;
+  return rows[0]?.value === expectedValue;
 };
 
 /**
@@ -48,6 +54,16 @@ export const createReleaseTag = async (
   tagKey: string,
   value: string,
 ): Promise<void> => {
+  // Upsert: a tag row with the key may already exist with another value —
+  // PATCH it instead of creating a duplicate (the selector picks data[0]).
+  const existing = await odataGet<{ id: number }>(
+    auth,
+    `/v6/release_tag?$select=id&$filter=release%20eq%20${releaseId}%20and%20tag_key%20eq%20'${tagKey}'&$top=1`,
+  );
+  if (existing[0]) {
+    await odataPatch(auth, `/v6/release_tag(${existing[0].id})`, { value });
+    return;
+  }
   await odataPost<{ id: number }>(auth, 'release_tag', {
     release: releaseId,
     tag_key: tagKey,

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test, beforeEach } from 'node:test';
 import { mirrorImageFromSource, resetRegistryTokens } from '../../server/controller/supervisorRelease/registryMirror';
 import { hostosSource, hostosSourceRegistryConfig, sourceRepo } from '../../server/controller/hostosRelease/catalog';
-import { hostosSource, hostosSourceRegistryConfig } from '../../server/controller/hostosRelease/catalog';
 import { hostosCommit } from '../../server/controller/hostosRelease/instance';
 import { seedHostosRelease } from '../../server/controller/hostosRelease/seed';
 
@@ -18,6 +17,8 @@ const sha = (char: string): string => `sha256:${char.repeat(64)}`;
 const MACHINE = 'raspberrypi4-64';
 const SOURCE_REPO = 'volkermauel/balenaos-hostapp/raspberrypi4-64';
 const TARGET_REPO = `balenaos-hostapp/${MACHINE}`;
+/** Repo the instance's image-is-stored-at-location hook assigns on create. */
+const ASSIGNED_REPO = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6';
 
 const hostappManifest = {
   schemaVersion: 2,
@@ -41,7 +42,7 @@ const instanceState = {
   application: { id: 99 },
   service: { id: 55 },
   releases: [] as { id: number; raw_version: string; semver: string }[],
-  imageByHash: null as { id: number; serviceId: number } | null,
+  imageByHash: null as { id: number; serviceId: number; location?: string } | null,
   releaseImages: [] as number[],
   releaseTag: false,
 };
@@ -68,7 +69,7 @@ const instanceGet = (url: string): Response | null => {
     return jsonResponse(200, { d: [instanceState.service] });
   }
   if (url.includes('/release_tag')) {
-    return jsonResponse(200, { d: instanceState.releaseTag ? [{ id: 9 }] : [] });
+    return jsonResponse(200, { d: instanceState.releaseTag ? [{ id: 9, value: '7.4.0+rev5' }] : [] });
   }
   if (url.includes('/release_image')) {
     return jsonResponse(200, { d: instanceState.releaseImages.map((imageId) => ({ image: { __id: imageId } })) });
@@ -82,13 +83,15 @@ const instanceGet = (url: string): Response | null => {
     return jsonResponse(200, { d: instanceState.releases });
   }
   if (url.includes('/image')) {
+    // location comes from the row: the hook-assigned repo once created
+    const location = `registry2.balena.example.com/v2/${instanceState.imageByHash?.location ?? TARGET_REPO}`;
     return jsonResponse(200, {
       d: instanceState.imageByHash
         ? [
             {
               id: instanceState.imageByHash.id,
               is_a_build_of__service: { __id: instanceState.imageByHash.serviceId },
-              is_stored_at__image_location: `registry2.balena.example.com/v2/${TARGET_REPO}`,
+              is_stored_at__image_location: location,
               content_hash: sha('e'),
             },
           ]
@@ -142,6 +145,11 @@ const installFetchMock = (): void => {
     if (url.startsWith('https://api.balena.example.com/v6/') && method === 'POST') {
       const resource = /\/v6\/([a-z_]+)/.exec(url)?.[1] ?? 'unknown';
       const ids: Record<string, number> = { image: 11, release: 42, release_image: 77, release_tag: 9 };
+      if (resource === 'image') {
+        // Simulate the image-is-stored-at-location hook: the POSTED location is
+        // overwritten server-side with a random repo — the read-back sees it.
+        instanceState.imageByHash = { id: ids.image, serviceId: 55, location: ASSIGNED_REPO };
+      }
       // pinejs POST with Prefer: return=representation answers with the created row itself
       return jsonResponse(200, { id: ids[resource] ?? 1 });
     }
@@ -157,9 +165,10 @@ const installFetchMock = (): void => {
         return new Response(null, { status: presentAtTarget.has(digest ?? '') ? 200 : 404 });
       }
       if (method === 'POST' && url.endsWith('/blobs/uploads/')) {
+        const uploadRepo = /\/v2\/(.+)\/blobs\/uploads\//.exec(url)?.[1] ?? TARGET_REPO;
         return new Response(null, {
           status: 202,
-          headers: { location: `/v2/${TARGET_REPO}/blobs/uploads/upload-1?_state=abc123` },
+          headers: { location: `/v2/${uploadRepo}/blobs/uploads/upload-1?_state=abc123` },
         });
       }
       if (method === 'PUT') {
@@ -243,7 +252,7 @@ test('a cold import creates image, mirrors, then release, link and version tag i
     assert.deepEqual(result, {
       appId: 99,
       releaseId: 42,
-      image: { repo: TARGET_REPO, digest: sha('e') },
+      image: { repo: ASSIGNED_REPO, digest: sha('e') },
     });
 
     const instancePosts = posts().filter((call) => call.url.includes('api.balena.example.com'));
@@ -259,6 +268,19 @@ test('a cold import creates image, mirrors, then release, link and version tag i
     assert.equal(imageBody.content_hash, sha('e'));
     assert.equal(imageBody.status, 'success');
     assert.equal(typeof imageBody.start_timestamp, 'string');
+
+    // The location was read back after the hook's overwrite…
+    const readBack = calls.find((call) => call.url.includes('/image') && call.url.includes('$filter=id%20eq%2011'));
+    assert.ok(readBack, 'image location is read back after creation');
+    // …and every registry write went to the ASSIGNED repo, never the intended one.
+    const registryWrites = calls.filter(
+      (call) =>
+        call.url.includes('registry2.balena.example.com/v2/') && (call.method === 'PUT' || call.method === 'POST'),
+    );
+    assert.ok(registryWrites.length > 0);
+    for (const write of registryWrites) {
+      assert.ok(write.url.includes(`/v2/${ASSIGNED_REPO}/`), `write hit the assigned repo: ${write.url}`);
+    }
 
     const releasePost = instancePosts[1];
     const releaseBody = JSON.parse(String(releasePost.body));
@@ -293,7 +315,7 @@ test('a cold import creates image, mirrors, then release, link and version tag i
 
 test('an already imported version short-circuits with no writes at all', async () => {
   instanceState.releases = [{ id: 42, raw_version: '7.4.0-rev5', semver: '7.4.0+rev5' }];
-  instanceState.imageByHash = { id: 11, serviceId: 55 };
+  instanceState.imageByHash = { id: 11, serviceId: 55, location: ASSIGNED_REPO };
   instanceState.releaseImages = [11];
   instanceState.releaseTag = true;
   presentAtTarget.add(sha('e'));

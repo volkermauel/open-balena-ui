@@ -60,8 +60,8 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   return body as T;
 };
 
-export const fetchHostosVersions = (deviceTypeSlug: string): Promise<HostosVersionsResponse> =>
-  request<HostosVersionsResponse>(`/versions?deviceType=${encodeURIComponent(deviceTypeSlug)}`);
+export const fetchHostosVersions = (deviceTypeSlug: string, signal?: AbortSignal): Promise<HostosVersionsResponse> =>
+  request<HostosVersionsResponse>(`/versions?deviceType=${encodeURIComponent(deviceTypeSlug)}`, { signal });
 
 export const seedHostosVersion = (deviceTypeSlug: string, version: string): Promise<HostosSeedResponse> =>
   request<HostosSeedResponse>('/seed', {
