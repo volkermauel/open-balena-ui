@@ -100,7 +100,7 @@ const instanceFetch = async (auth: InstanceAuth, path: string, init?: RequestIni
   return res;
 };
 
-const odataGet = async <T>(auth: InstanceAuth, path: string): Promise<T[]> => {
+export const odataGet = async <T>(auth: InstanceAuth, path: string): Promise<T[]> => {
   const res = await instanceFetch(auth, path);
   if (!res.ok) {
     throw new InstanceApiError(await extractErrorMessage(res, `Instance request failed (${res.status})`));
@@ -109,7 +109,7 @@ const odataGet = async <T>(auth: InstanceAuth, path: string): Promise<T[]> => {
   return Array.isArray(body) ? body : (body.d ?? []);
 };
 
-const odataPost = async <T extends { id: number }>(
+export const odataPost = async <T extends { id: number }>(
   auth: InstanceAuth,
   resource: string,
   data: Record<string, unknown>,
