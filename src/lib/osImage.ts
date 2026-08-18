@@ -1,3 +1,5 @@
+import type { ResourceRecord } from '../types/resource';
+
 export type OsImageVariant = 'production' | 'development';
 export type OsImageFormat = 'zip' | 'gz';
 export type OsImageNetwork = 'ethernet' | 'wifi';
@@ -157,3 +159,25 @@ export const downloadOsImageArtifact = async (job: OsImageJob): Promise<string> 
 
   return filename;
 };
+
+/**
+ * Merge server-side fleet records into the seeded dropdown list: deduplicated by
+ * id with the server records winning over the locally seeded one. Pure — unit tested.
+ */
+export const mergeFleetRecords = (seeded: ResourceRecord[], incoming: ResourceRecord[]): ResourceRecord[] => {
+  const merged = [...incoming];
+  for (const record of seeded) {
+    if (!merged.some((candidate) => String(candidate.id) === String(record.id))) {
+      merged.push(record);
+    }
+  }
+  return merged;
+};
+
+/**
+ * A fleet belongs to the selected device type when its `is for-device type` reference
+ * matches the device type's id (openBalena OData has no usable class filter, so the
+ * wizard filters client-side). Pure — unit tested.
+ */
+export const fleetMatchesDeviceType = (fleet: ResourceRecord, deviceTypeId: string | number | undefined): boolean =>
+  deviceTypeId === undefined || String(fleet['is for-device type']) === String(deviceTypeId);

@@ -25,9 +25,9 @@ const baseConfig: FleetConfigOptions = {
   network: 'ethernet',
 };
 
-test('pristineFilename uses the documented key layout', () => {
-  assert.equal(pristineFilename('raspberrypi4-64', '3.2.7', 'production'), 'raspberrypi4-64__3.2.7__prod.img');
-  assert.equal(pristineFilename('raspberrypi4-64', '3.2.7', 'development'), 'raspberrypi4-64__3.2.7__dev.img');
+test('pristineFilename uses the documented key layout (verified zip archive)', () => {
+  assert.equal(pristineFilename('raspberrypi4-64', '3.2.7', 'production'), 'raspberrypi4-64__3.2.7__prod.zip');
+  assert.equal(pristineFilename('raspberrypi4-64', '3.2.7', 'development'), 'raspberrypi4-64__3.2.7__dev.zip');
 });
 
 test('artifactFilename includes variant token, config hash and format', () => {
@@ -42,6 +42,14 @@ test('artifactFilename includes variant token, config hash and format', () => {
 });
 
 test('parseCacheFilename round-trips pristine and artifact keys', () => {
+  // Pristine keys now hold the verified mirror .zip; the legacy .img layout
+  // (balenaCloud-sourced, pre-mirror) still parses for files aging out on disk.
+  assert.deepEqual(parseCacheFilename('raspberrypi4-64__3.2.7__prod.zip'), {
+    deviceType: 'raspberrypi4-64',
+    version: '3.2.7',
+    variant: 'production',
+    format: 'zip',
+  });
   assert.deepEqual(parseCacheFilename('raspberrypi4-64__3.2.7__prod.img'), {
     deviceType: 'raspberrypi4-64',
     version: '3.2.7',

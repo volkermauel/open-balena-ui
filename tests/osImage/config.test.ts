@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildDownloadConfigBody, generateFleetConfig } from '../../server/controller/osImage/config';
+import {
+  applyGatewaySshKeys,
+  buildDownloadConfigBody,
+  generateFleetConfig,
+  parseGatewaySshPublicKeys,
+} from '../../server/controller/osImage/config';
 import { OsImageError } from '../../server/controller/osImage/errors';
 import type { FleetConfigOptions } from '../../server/controller/osImage/cacheStore';
 
@@ -187,4 +192,70 @@ test('generateFleetConfig requires an authorization header and configured API ur
       process.env.REACT_APP_OPEN_BALENA_API_URL = previousUrl;
     }
   }
+});
+
+// --- gateway SSH keys (GATEWAY_SSH_PUBLIC_KEYS) ---------------------------------
+
+test('parseGatewaySshPublicKeys splits on newlines, trims and drops empty lines', () => {
+  assert.deepEqual(
+    parseGatewaySshPublicKeys(
+      'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI comment\r\n\n \nssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQ==',
+    ),
+    ['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI comment', 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQ=='],
+  );
+  assert.deepEqual(parseGatewaySshPublicKeys(undefined), []);
+  assert.deepEqual(parseGatewaySshPublicKeys(''), []);
+  assert.deepEqual(parseGatewaySshPublicKeys(' \n\t\n'), []);
+  // The ecdsa family's real openssh prefix is accepted too.
+  assert.deepEqual(parseGatewaySshPublicKeys('ecdsa-sha2-nistp256 AAAAE2VjZHNh comment'), [
+    'ecdsa-sha2-nistp256 AAAAE2VjZHNh comment',
+  ]);
+});
+
+test('parseGatewaySshPublicKeys accepts hardware (sk-) and certificate (-cert-v01) key forms', () => {
+  const keys =
+    'sk-ssh-ed25519@openssh.com AAAAC3NzaC1lZDI1NTE5AAAAI yubikey\n' +
+    'sk-ecdsa-sha2-nistp256@openssh.com AAAAE2VjZHNh ecdsa-token\n' +
+    'ssh-ed25519-cert-v01@openssh.com AAAAC3NzaC1lZDI1NTE5 ed25519-cert\n' +
+    'ecdsa-sha2-nistp384-cert-v01@openssh.com AAAAE2VjZHNh nistp384-cert\n' +
+    'sk-ssh-ed25519-cert-v01@openssh.com AAAAC3NzaC1lZDI1NTE5 sk-cert';
+  assert.deepEqual(parseGatewaySshPublicKeys(keys), keys.split('\n'));
+});
+
+test('parseGatewaySshPublicKeys rejects malformed keys with a config error naming the env var', () => {
+  for (const invalid of [
+    'not-a-key',
+    'ssh-ed25519',
+    'ssh-ed25519-with-typo AAAAC3Nza',
+    'ssh-rsa !!!not-base64!!!',
+    'AAAAC3NzaC1lZDI1NTE5 (missing the type prefix)',
+    'sk-rsa AAAAC3NzaC1lZDI1NTE5 (sk- must precede a real family)',
+  ]) {
+    assert.throws(
+      () => parseGatewaySshPublicKeys(invalid),
+      (error: unknown) => {
+        assert.ok(error instanceof OsImageError);
+        assert.equal(error.statusCode, 500);
+        assert.match(error.message, /GATEWAY_SSH_PUBLIC_KEYS/);
+        return true;
+      },
+    );
+  }
+});
+
+test('applyGatewaySshKeys merges keys into os.sshKeys and leaves unconfigured configs untouched', () => {
+  const untouched = { applicationId: 42, apiKey: 'cfg' };
+  assert.equal(applyGatewaySshKeys(untouched, []), untouched);
+
+  const gatewayKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI gateway';
+  assert.deepEqual(applyGatewaySshKeys({ applicationId: 42 }, [gatewayKey]), {
+    applicationId: 42,
+    os: { sshKeys: [gatewayKey] },
+  });
+
+  // Existing keys are kept (unique append), other os fields preserved.
+  assert.deepEqual(
+    applyGatewaySshKeys({ os: { sshKeys: ['existing'], version: '2.144.0' } }, [gatewayKey, 'existing']),
+    { os: { sshKeys: ['existing', gatewayKey], version: '2.144.0' } },
+  );
 });

@@ -53,9 +53,9 @@ export const isValidDeviceTypeSlug = (deviceType: string): boolean =>
 export const isValidOsVersion = (version: string): boolean =>
   /^[a-zA-Z0-9][a-zA-Z0-9._+-]*$/.test(version) && version.length <= 64;
 
-/** Pristine (unconfigured) image cache key: `{deviceType}__{version}__{prod|dev}.img` */
+/** Pristine (unconfigured) cache key: the sha256-verified mirror asset, `{deviceType}__{version}__{prod|dev}.zip` */
 export const pristineFilename = (deviceType: string, version: string, variant: OsImageVariant): string =>
-  `${deviceType}__${version}__${variantToken(variant)}.img`;
+  `${deviceType}__${version}__${variantToken(variant)}.zip`;
 
 /** Configured artifact cache key: `{deviceType}__{version}__{prod|dev}__{sha16}.{zip|gz}` */
 export const artifactFilename = (
@@ -148,7 +148,7 @@ const compareCachedVersionDesc = (a: CachedVersionInfo, b: CachedVersionInfo): n
 /**
  * Two-tier, LRU-evicted, size-capped on-disk cache for OS images:
  *
- * - `img/` pristine images downloaded at most once per (device type, version, variant)
+ * - `img/` pristine mirror archives (verified zips) downloaded at most once per (device type, version, variant)
  * - `out/` configured, compressed artifacts keyed by the config hash
  * - `tmp/` in-flight scratch files (callers must clean up)
  *

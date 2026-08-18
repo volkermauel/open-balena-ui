@@ -30,12 +30,13 @@ import {
   fetchOsImageCacheStatus,
   fetchOsImageJob,
   fetchOsImageVersions,
+  fleetMatchesDeviceType,
+  mergeFleetRecords,
   prepareOsImage,
   type OsImageFormat,
   type OsImageJob,
   type OsImageNetwork,
   type OsImageRequestError,
-  type OsImageVariant,
 } from '../lib/osImage';
 
 const POLL_INTERVAL_MS = 1000;
@@ -45,13 +46,15 @@ export interface OsDownloadDialogProps {
   open: boolean;
   onClose: () => void;
   initialFleetId?: string | number;
+  /** The launching fleet record itself — seeds the dropdown so it is never empty on open. */
+  initialFleetRecord?: ResourceRecord;
   initialDeviceTypeSlug?: string;
   /** Device type resource id (fleet records reference device types by id, not slug). */
   initialDeviceTypeId?: string | number;
 }
 
 const PHASE_LABELS: Record<string, string> = {
-  downloading: 'Downloading OS image from balenaCloud',
+  downloading: 'Downloading OS image from the mirror',
   injecting: 'Injecting fleet configuration',
   compressing: 'Compressing provisioned image',
   ready: 'Artifact ready',
@@ -79,28 +82,31 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
   open,
   onClose,
   initialFleetId,
+  initialFleetRecord,
   initialDeviceTypeSlug,
   initialDeviceTypeId,
 }) => {
   const dataProvider = useDataProvider<DataProvider>();
 
   const [deviceTypes, setDeviceTypes] = React.useState<ResourceRecord[]>([]);
-  const [fleets, setFleets] = React.useState<ResourceRecord[]>([]);
+  const [fleets, setFleets] = React.useState<ResourceRecord[]>(initialFleetRecord ? [initialFleetRecord] : []);
   const [deviceTypeSlug, setDeviceTypeSlug] = React.useState(initialDeviceTypeSlug ?? '');
   const [versions, setVersions] = React.useState<string[]>([]);
   const [cachedVersions, setCachedVersions] = React.useState<Set<string>>(new Set());
   const [versionsLoading, setVersionsLoading] = React.useState(false);
   const [versionsError, setVersionsError] = React.useState<string | null>(null);
+  // Fleet/device-type load failures land here, separate from version-list errors.
+  const [choicesError, setChoicesError] = React.useState<string | null>(null);
 
   const [version, setVersion] = React.useState('');
-  const [variant, setVariant] = React.useState<OsImageVariant>('production');
+  // The mirror publishes production images only — the variant selector is gone.
+  const variant = 'production' as const;
   const [format, setFormat] = React.useState<OsImageFormat>('zip');
   const [fleetId, setFleetId] = React.useState(initialFleetId !== undefined ? String(initialFleetId) : '');
   const [network, setNetwork] = React.useState<OsImageNetwork>('ethernet');
   const [wifiSsid, setWifiSsid] = React.useState('');
   const [wifiKey, setWifiKey] = React.useState('');
   const [appUpdatePollInterval, setAppUpdatePollInterval] = React.useState('');
-
   const [job, setJob] = React.useState<OsImageJob | null>(null);
   const [jobError, setJobError] = React.useState<string | null>(null);
   const [savedFilename, setSavedFilename] = React.useState<string | null>(null);
@@ -132,6 +138,7 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
     }
 
     let cancelled = false;
+    setChoicesError(null);
     const fetchChoices = async () => {
       try {
         const [deviceTypeRecords, fleetRecords] = await Promise.all([
@@ -143,14 +150,16 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
           dataProvider.getList<ResourceRecord>('application', {
             pagination: { page: 1, perPage: 1000 },
             sort: { field: 'app name', order: 'ASC' },
-            filter: { 'is of-class': 'fleet' },
+            filter: {},
           }),
         ]);
         if (cancelled) {
           return;
         }
         setDeviceTypes(deviceTypeRecords.data);
-        setFleets(fleetRecords.data);
+        // Server records win; the launching fleet stays selectable even if the
+        // list request returns nothing usable (openBalena lacks the class filter).
+        setFleets(mergeFleetRecords(initialFleetRecord ? [initialFleetRecord] : [], fleetRecords.data));
 
         if (!initialDeviceTypeSlug && initialDeviceTypeId !== undefined) {
           const matched = deviceTypeRecords.data.find((record) => String(record.id) === String(initialDeviceTypeId));
@@ -160,7 +169,7 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
         }
       } catch (error) {
         if (!cancelled) {
-          setVersionsError(error instanceof Error ? error.message : 'Failed to load fleets or device types');
+          setChoicesError(error instanceof Error ? error.message : 'Failed to load fleets or device types');
         }
       }
     };
@@ -219,35 +228,18 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, deviceTypeSlug]);
 
+  const selectedDeviceTypeId = deviceTypes.find((record) => String(record.slug) === deviceTypeSlug)?.id;
+  const visibleFleets = fleets.filter((record) => fleetMatchesDeviceType(record, selectedDeviceTypeId));
+
+  // A device-type change invalidates a fleet of another device type: reset the
+  // selection to the first fleet of the newly selected type (or empty).
   React.useEffect(() => {
-    if (!open || !deviceTypeSlug || versionsLoading) {
-      return;
+    const selected = fleets.find((record) => String(record.id) === fleetId);
+    if (selected && !fleetMatchesDeviceType(selected, selectedDeviceTypeId)) {
+      setFleetId(visibleFleets[0] !== undefined ? String(visibleFleets[0].id) : '');
     }
-    setCachedVersions((previous) => previous); // variant switch keeps the set until refreshed
-    let cancelled = false;
-    const refreshCacheStatus = async () => {
-      try {
-        const cacheStatus = await fetchOsImageCacheStatus(deviceTypeSlug);
-        if (cancelled) {
-          return;
-        }
-        setCachedVersions(
-          new Set(
-            cacheStatus.versions
-              .filter((entry) => entry.variant === variant && entry.cached)
-              .map((entry) => entry.version),
-          ),
-        );
-      } catch {
-        // Badges are best-effort; keep the previous set.
-      }
-    };
-    void refreshCacheStatus();
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [variant]);
+  }, [deviceTypeSlug, fleets, fleetId]);
 
   const pollJob = (jobId: string, intervalMs: number) => {
     pollTimer.current = window.setTimeout(async () => {
@@ -395,19 +387,6 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
           </FormControl>
 
           <FormControl disabled={busy}>
-            <FormLabel id='os-download-variant'>Variant</FormLabel>
-            <RadioGroup
-              row
-              aria-labelledby='os-download-variant'
-              value={variant}
-              onChange={(event) => setVariant(event.target.value as OsImageVariant)}
-            >
-              <FormControlLabel value='production' control={<Radio />} label='Production' />
-              <FormControlLabel value='development' control={<Radio />} label='Development' />
-            </RadioGroup>
-          </FormControl>
-
-          <FormControl disabled={busy}>
             <FormLabel id='os-download-format'>Format</FormLabel>
             <RadioGroup
               row
@@ -420,6 +399,12 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
             </RadioGroup>
           </FormControl>
 
+          {choicesError && (
+            <Alert severity='error' sx={{ mb: 2 }}>
+              {choicesError}
+            </Alert>
+          )}
+
           <FormControl fullWidth disabled={busy}>
             <InputLabel id='os-download-fleet'>Fleet</InputLabel>
             <Select
@@ -428,7 +413,7 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
               label='Fleet'
               onChange={(event) => setFleetId(event.target.value)}
             >
-              {fleets.map((record) => (
+              {visibleFleets.map((record) => (
                 <MenuItem key={String(record.id)} value={String(record.id)}>
                   {String(record['app name'] ?? record.id)}
                 </MenuItem>

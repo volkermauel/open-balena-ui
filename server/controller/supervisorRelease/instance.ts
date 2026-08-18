@@ -440,14 +440,18 @@ export const createImage = async (
   serviceId: number,
   location: string,
   contentHash: string,
-): Promise<{ id: number }> =>
-  odataPost<{ id: number }>(auth, 'image', {
+): Promise<{ id: number }> => {
+  // open-balena-api requires every image with status 'success' to carry a push timestamp.
+  const timestamp = new Date().toISOString();
+  return odataPost<{ id: number }>(auth, 'image', {
     is_a_build_of__service: serviceId,
     is_stored_at__image_location: location,
     content_hash: contentHash,
     status: 'success',
-    start_timestamp: new Date().toISOString(),
+    start_timestamp: timestamp,
+    push_timestamp: timestamp,
   });
+};
 
 /** Create the supervisor release row (version-field tolerant). */
 export const createRelease = async (auth: InstanceAuth, input: CreateReleaseInput): Promise<{ id: number }> => {
