@@ -95,6 +95,7 @@ const SupervisorVersionCell: React.FC = () => {
     'is of-device type'?: number;
   }>();
   const [status, setStatus] = React.useState<SupervisorStatusResponse | null>(null);
+  const [refreshKey, setRefreshKey] = React.useState(0);
 
   React.useEffect(() => {
     if (!record?.id) {
@@ -113,7 +114,7 @@ const SupervisorVersionCell: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [record?.id]);
+  }, [record?.id, refreshKey]);
 
   if (!record) {
     return null;
@@ -133,6 +134,7 @@ const SupervisorVersionCell: React.FC = () => {
         currentVersion={record['supervisor version'] ?? null}
         size='small'
         sx={{ marginTop: 0.5 }}
+        onUpdated={() => setRefreshKey((key) => key + 1)}
       />
     </Box>
   );

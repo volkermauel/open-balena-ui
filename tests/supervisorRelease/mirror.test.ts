@@ -226,3 +226,43 @@ test('blob uploads follow the upload session Location (relative path, absolute U
     restoreFetch();
   }
 });
+
+test('hostile digests inside manifest JSON are rejected before any registry call', async () => {
+  const { inspectManifest, mirrorImage } = await import('../../server/controller/supervisorRelease/registryMirror');
+  const { RegistryMirrorError } = await import('../../server/controller/supervisorRelease/errors');
+
+  // Manifest list with a traversal digest in a child entry
+  const hostileList = {
+    schemaVersion: 2,
+    mediaType: 'application/vnd.docker.distribution.manifest.list.v2+json',
+    manifests: [{ mediaType: 'application/vnd.docker.distribution.manifest.v2+json', size: 7, digest: '../../evil' }],
+  };
+  assert.throws(() => inspectManifest(hostileList), RegistryMirrorError);
+
+  // Single manifest with a hostile config digest
+  const hostileManifest = {
+    schemaVersion: 2,
+    mediaType: 'application/vnd.docker.distribution.manifest.v2+json',
+    config: { digest: 'sha256:short' },
+    layers: [{ digest: 'http://attacker/x' }],
+  };
+  assert.throws(() => inspectManifest(hostileManifest), RegistryMirrorError);
+
+  // Entry point still rejects traversal digests outright (no fetch performed)
+  process.env.BALENACLOUD_TOKEN = 'token';
+  let fetches = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    fetches += 1;
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+  try {
+    await assert.rejects(mirrorImage('Bearer caller', 'a/b', '../../evil'), RegistryMirrorError);
+    await assert.rejects(mirrorImage('Bearer caller', 'a/b', 'sha256:xyz'), RegistryMirrorError);
+    assert.equal(fetches, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.BALENACLOUD_TOKEN;
+    resetRegistryTokens();
+  }
+});

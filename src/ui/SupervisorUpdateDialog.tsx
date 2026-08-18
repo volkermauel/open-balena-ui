@@ -34,6 +34,8 @@ export interface SupervisorUpdateDialogProps {
   currentVersion?: string | null;
   deviceIds: number[];
   title?: string;
+  /** Called once after a successful apply — lets parents refresh stale state. */
+  onUpdated?: () => void;
 }
 
 type ApplyPhase = 'idle' | 'applying' | 'done';
@@ -53,6 +55,7 @@ const SupervisorUpdateDialog: React.FC<SupervisorUpdateDialogProps> = ({
   currentVersion,
   deviceIds,
   title,
+  onUpdated,
 }) => {
   const [catalog, setCatalog] = React.useState<SupervisorVersionsResponse | null>(null);
   const [isLoading, setIsLoading] = React.useState(false);
@@ -109,6 +112,7 @@ const SupervisorUpdateDialog: React.FC<SupervisorUpdateDialogProps> = ({
       const response = await updateSupervisorVersions(deviceTypeSlug, selected.version, deviceIds);
       setResults(response.results);
       setPhase('done');
+      onUpdated?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Supervisor update failed');
       setPhase('idle');

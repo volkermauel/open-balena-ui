@@ -53,6 +53,19 @@ const resolveDeviceTypeSlug = async (dataProvider: DataProvider, deviceTypeId: n
   return data?.slug ?? null;
 };
 
+/** Warn when devices had to be skipped because they lack a device type. */
+const notifySkippedDevices = (
+  total: number,
+  groups: DeviceTypeGroup[],
+  notify: (message: string, options: { type: 'info' | 'warning' | 'error' }) => void,
+): void => {
+  const grouped = groups.reduce((count, group) => count + group.deviceIds.length, 0);
+  const skipped = total - grouped;
+  if (skipped > 0) {
+    notify(`${skipped} device(s) skipped — no device type on record`, { type: 'warning' });
+  }
+};
+
 export interface SupervisorUpdateButtonProps {
   deviceIds: number[];
   deviceTypeSlug?: string;
@@ -65,6 +78,8 @@ export interface SupervisorUpdateButtonProps {
   sx?: ButtonProps['sx'];
   style?: React.CSSProperties;
   disabled?: boolean;
+  /** Called after a successful apply, so parents can refresh stale state. */
+  onUpdated?: () => void;
 }
 
 export const SupervisorUpdateButton: React.FC<SupervisorUpdateButtonProps> = ({
@@ -79,6 +94,7 @@ export const SupervisorUpdateButton: React.FC<SupervisorUpdateButtonProps> = ({
   sx,
   style,
   disabled,
+  onUpdated,
 }) => {
   const dataProvider = useDataProvider<DataProvider>();
   const notify = useNotify();
@@ -137,6 +153,7 @@ export const SupervisorUpdateButton: React.FC<SupervisorUpdateButtonProps> = ({
           currentVersion={currentVersion}
           deviceIds={deviceIds}
           title={title}
+          onUpdated={onUpdated}
         />
       )}
     </>
@@ -171,6 +188,7 @@ export const SupervisorBulkUpdateButton: React.FC<SupervisorBulkUpdateButtonProp
       }>('device', { ids: selectedIds.map((id) => Number(id)) });
 
       const groups = groupDevicesByDeviceType(devices as never[]);
+      notifySkippedDevices(devices.length, groups, notify);
       if (groups.length !== 1) {
         notify('Select devices of a single device type to update their supervisor', { type: 'warning' });
         return;
@@ -275,6 +293,7 @@ export const SupervisorFleetUpdateButton: React.FC<SupervisorFleetUpdateButtonPr
       }
 
       const groups = groupDevicesByDeviceType(devices as never[]);
+      notifySkippedDevices(devices.length, groups, notify);
       const entries: { slug: string; ids: number[]; currentVersion: string | null }[] = [];
       for (const group of groups) {
         const slug = await resolveDeviceTypeSlug(dataProvider, group.deviceTypeId);

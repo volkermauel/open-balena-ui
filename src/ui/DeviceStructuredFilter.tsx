@@ -33,8 +33,7 @@ const toOptionalNumber = (value: unknown): number | null => {
   return Number.isNaN(n) ? null : n;
 };
 
-const getNonNullReleaseIds = (ids: Array<number | null>): number[] =>
-  ids.filter((id): id is number => id !== null);
+const getNonNullReleaseIds = (ids: Array<number | null>): number[] => ids.filter((id): id is number => id !== null);
 
 // Helper to convert DeviceFilterState to react-admin filter object
 export const convertToListFilters = (filters: DeviceFilterState): Record<string, unknown> => {
@@ -89,19 +88,14 @@ export const deriveStructuredFilters = (filterValues: Record<string, unknown>): 
 
   if (typeof releaseFilter === 'string') {
     const trimmed = releaseFilter.trim();
-    const inner =
-      trimmed.startsWith('(') && trimmed.endsWith(')')
-        ? trimmed.slice(1, -1)
-        : trimmed;
+    const inner = trimmed.startsWith('(') && trimmed.endsWith(')') ? trimmed.slice(1, -1) : trimmed;
 
     releaseIds = inner
       .split(',')
       .map((id) => Number(id.trim()))
       .filter((id) => !Number.isNaN(id));
   } else if (Array.isArray(releaseFilter)) {
-    releaseIds = releaseFilter
-      .map((id) => Number(id))
-      .filter((id) => !Number.isNaN(id));
+    releaseIds = releaseFilter.map((id) => Number(id)).filter((id) => !Number.isNaN(id));
   }
 
   const osVersion = (filterValues['os version@ilike'] as string) || '';
@@ -154,7 +148,7 @@ const DeviceStructuredFilter: React.FC<DeviceStructuredFilterProps> = ({
 
       setFilters(nextFilters, undefined, false);
     },
-    [filterValues, setFilters]
+    [filterValues, setFilters],
   );
 
   const handleRemoveFilter = React.useCallback(
@@ -182,7 +176,7 @@ const DeviceStructuredFilter: React.FC<DeviceStructuredFilterProps> = ({
 
       handleApplyFilters(updatedFilters);
     },
-    [structuredFilters, handleApplyFilters]
+    [structuredFilters, handleApplyFilters],
   );
 
   const hasActiveFilters = hasActiveStructuredFilters(structuredFilters);
@@ -202,4 +196,3 @@ const DeviceStructuredFilter: React.FC<DeviceStructuredFilterProps> = ({
 };
 
 export default DeviceStructuredFilter;
-

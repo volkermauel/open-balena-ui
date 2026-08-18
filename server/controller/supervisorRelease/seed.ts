@@ -112,7 +112,8 @@ export const planSeedSteps = (
   return steps;
 };
 
-// Per-(arch, version) in-process lock: concurrent seeds await the first.
+// Per-arch in-process lock: concurrent seeds serialize (first one creates the
+// app row; later ones — any version — reuse it), preventing duplicate-app races.
 const seedLocks = new Map<string, Promise<unknown>>();
 
 const withSeedLock = async <T>(key: string, work: () => Promise<T>): Promise<T> => {
@@ -172,26 +173,26 @@ export const fetchCloudImagesForVersion = async (
  * Seed (or confirm already seeded) a supervisor version for a device type's
  * arch and return the instance release id.
  */
+/** Guard used by the plan executor below: a planned step must have produced the id. */
+const requireSeedId = (id: number | undefined, what: string): number => {
+  if (id === undefined) {
+    throw new UpstreamError(`Seed plan error: ${what} id missing after planned steps`);
+  }
+  return id;
+};
+
 export const seedSupervisorRelease = async (
   auth: InstanceAuth,
   deviceTypeSlug: string,
   version: string,
 ): Promise<SeedResult> => {
   const { deviceType } = await resolveCatalogForDeviceType(auth, deviceTypeSlug);
-  return withSeedLock(`${deviceType.arch}:${version}`, async () => {
+  return withSeedLock(deviceType.arch, async () => {
     const { authorization } = auth;
     const arch = deviceType.arch;
     const slug = supervisorAppSlug(arch);
 
-    // 1. Application (idempotent by slug)
-    let app = await findApplicationBySlug(auth, slug);
-    if (!app) {
-      const instanceDeviceType = await findDeviceTypeByArch(auth, arch);
-      app = await createSupervisorApplication(auth, arch, instanceDeviceType.id);
-    }
-    const appId = app.id;
-
-    // 2. Cloud catalog for this version
+    // Cloud catalog for this version (before touching the instance)
     const cloudApp = await fetchSupervisorApplication(arch);
     if (!cloudApp) {
       throw new NotFoundError(`balenaCloud has no supervisor application for arch ${arch}`);
@@ -199,24 +200,37 @@ export const seedSupervisorRelease = async (
     const versions = dedupeAndOrderReleases(await fetchSupervisorReleases(cloudApp.id));
     const { catalog, images } = await fetchCloudImagesForVersion(versions, version);
 
-    // 3. Existing release? (idempotency short-circuit — releases are only
-    // created after mirroring, so an existing release means a completed seed)
-    const existingReleases = await findAppReleases(auth, appId);
+    // Existing instance state — lookups only; every creation happens per the plan below.
+    let app = await findApplicationBySlug(auth, slug);
+    const existingReleases = app ? await findAppReleases(auth, app.id) : [];
     const existingRelease = existingReleases.find(
       (release) => release.rawVersion === catalog.rawVersion || release.semver === catalog.semver,
     );
 
-    // 4. Services (create-if-missing, same names as balenaCloud)
+    const serviceNames = [...new Set(images.map((image) => image.serviceName))];
     const serviceIds = new Map<string, number>();
-    for (const serviceName of [...new Set(images.map((image) => image.serviceName))]) {
-      const existingService = await findServiceByName(auth, appId, serviceName);
-      serviceIds.set(serviceName, existingService?.id ?? (await createService(auth, appId, serviceName)).id);
+    const existingServiceNames: string[] = [];
+    for (const serviceName of serviceNames) {
+      const existingService = app ? await findServiceByName(auth, app.id, serviceName) : undefined;
+      if (existingService) {
+        serviceIds.set(serviceName, existingService.id);
+        existingServiceNames.push(serviceName);
+      }
     }
 
-    // 5. Image metadata (instance-registry location, balenaCloud digest as content hash)
     const registryHost = targetRegistryHost();
-    const imageIds: number[] = [];
-    const mirroredImages: SeedImageResult[] = [];
+    const imageIdByHash = new Map<string, number>();
+    const existingImageHashes: string[] = [];
+    for (const image of images) {
+      if (imageIdByHash.has(image.contentHash)) {
+        continue;
+      }
+      const existingImage = await findImageByContentHash(auth, image.contentHash);
+      if (existingImage && existingServiceMatch(existingImage.serviceId, serviceIds)) {
+        imageIdByHash.set(image.contentHash, existingImage.id);
+        existingImageHashes.push(image.contentHash);
+      }
+    }
 
     const verifyAll = async (): Promise<boolean> => {
       const results = await Promise.all(
@@ -227,61 +241,102 @@ export const seedSupervisorRelease = async (
       return results.every((ok) => ok);
     };
 
-    for (const image of images) {
-      const repo = repoFromLocation(image.location);
-      const existingImage = await findImageByContentHash(auth, image.contentHash);
+    const existingReleaseImageIds = existingRelease
+      ? (await findReleaseImages(auth, existingRelease.id)).map((link) => link.imageId)
+      : [];
 
-      let imageId = existingImage?.id;
-      if (!existingImage || !existingServiceMatch(existingImage.serviceId, serviceIds)) {
-        const serviceId = serviceIds.get(image.serviceName);
-        if (!serviceId) {
-          throw new NotFoundError(`No service ${image.serviceName} for image ${repo}`);
-        }
-        const location = `${registryHost}/v2/${repo}`;
-        imageId = (await createImage(auth, serviceId, location, image.contentHash)).id;
-      }
-      if (!imageId) {
-        throw new NotFoundError(`Could not resolve an image row for ${repo}`);
-      }
+    // The pure planner (unit tested) decides which steps remain; execution
+    // follows it exactly, in its order — the tested order IS the real order.
+    const plan = planSeedSteps(
+      {
+        appId: app?.id,
+        releaseId: existingRelease?.id,
+        existingServiceNames,
+        existingImageHashes,
+        existingReleaseImageIds,
+        bytesVerified: await verifyAll(),
+      },
+      {
+        serviceNames,
+        imageHashes: images.map((image) => image.contentHash),
+        imageCount: images.length,
+      },
+    );
 
-      imageIds.push(imageId);
-      mirroredImages.push({ repo, digest: image.contentHash });
-    }
-
-    // 6. Mirror bytes (skip only when every manifest is already at the target)
-    const alreadyMirrored = await verifyAll();
-    if (!alreadyMirrored) {
-      for (const image of images) {
-        await mirrorImage(authorization, repoFromLocation(image.location), image.contentHash);
-      }
-      if (!(await verifyAll())) {
-        throw new UpstreamError(`Mirroring of supervisor ${version} did not verify at the target registry`);
-      }
-    }
-
-    // 7. Release (composition copied verbatim from balenaCloud)
+    let appId = app?.id;
     let releaseId = existingRelease?.id;
-    if (!releaseId) {
-      releaseId = (
-        await createRelease(auth, {
-          appId,
-          commit: commitForCloudRelease(catalog.cloudReleaseId, catalog.rawVersion),
-          rawVersion: catalog.rawVersion,
-          semver: parseSemverFields(catalog.semver),
-          composition: await fetchCloudReleaseComposition(catalog.cloudReleaseId),
-        })
-      ).id;
-    }
 
-    // 8. release_image links
-    const linkedImageIds = new Set((await findReleaseImages(auth, releaseId)).map((link) => link.imageId));
-    for (const imageId of imageIds) {
-      if (!linkedImageIds.has(imageId)) {
-        await createReleaseImage(auth, releaseId, imageId);
+    for (const step of plan) {
+      switch (step) {
+        case 'create-app': {
+          const instanceDeviceType = await findDeviceTypeByArch(auth, arch);
+          app = await createSupervisorApplication(auth, arch, instanceDeviceType.id);
+          appId = app.id;
+          break;
+        }
+        case 'create-service':
+          for (const serviceName of serviceNames) {
+            if (!serviceIds.has(serviceName)) {
+              serviceIds.set(
+                serviceName,
+                (await createService(auth, requireSeedId(appId, 'application'), serviceName)).id,
+              );
+            }
+          }
+          break;
+        case 'create-image-metadata':
+          for (const image of images) {
+            if (imageIdByHash.has(image.contentHash)) {
+              continue;
+            }
+            const serviceId = serviceIds.get(image.serviceName);
+            if (!serviceId) {
+              throw new NotFoundError(`No service ${image.serviceName} for image ${repoFromLocation(image.location)}`);
+            }
+            const location = `${registryHost}/v2/${repoFromLocation(image.location)}`;
+            imageIdByHash.set(image.contentHash, (await createImage(auth, serviceId, location, image.contentHash)).id);
+          }
+          break;
+        case 'mirror-bytes':
+          for (const image of images) {
+            await mirrorImage(authorization, repoFromLocation(image.location), image.contentHash);
+          }
+          if (!(await verifyAll())) {
+            throw new UpstreamError(`Mirroring of supervisor ${version} did not verify at the target registry`);
+          }
+          break;
+        case 'create-release':
+          releaseId = (
+            await createRelease(auth, {
+              appId: requireSeedId(appId, 'application'),
+              commit: commitForCloudRelease(catalog.cloudReleaseId, catalog.rawVersion),
+              rawVersion: catalog.rawVersion,
+              semver: parseSemverFields(catalog.semver),
+              composition: await fetchCloudReleaseComposition(catalog.cloudReleaseId),
+            })
+          ).id;
+          break;
+        case 'create-release-image': {
+          const release = requireSeedId(releaseId, 'release');
+          const linkedImageIds = new Set((await findReleaseImages(auth, release)).map((link) => link.imageId));
+          for (const image of images) {
+            const imageId = imageIdByHash.get(image.contentHash);
+            if (imageId !== undefined && !linkedImageIds.has(imageId)) {
+              await createReleaseImage(auth, release, imageId);
+            }
+          }
+          break;
+        }
+        case 'complete':
+          break;
       }
     }
 
-    return { appId, releaseId, images: mirroredImages };
+    return {
+      appId: requireSeedId(appId, 'application'),
+      releaseId: requireSeedId(releaseId, 'release'),
+      images: images.map((image) => ({ repo: repoFromLocation(image.location), digest: image.contentHash })),
+    };
   });
 };
 

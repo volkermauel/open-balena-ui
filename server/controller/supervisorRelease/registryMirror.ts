@@ -75,6 +75,16 @@ export interface ManifestInspection {
   blobDigests: string[];
 }
 
+/** Digest shape accepted in registry paths — every digest used in a URL is checked. */
+export const isRegistryDigest = (digest: string): boolean => /^sha256:[a-f0-9]{64}$/.test(digest);
+
+const assertDigest = (digest: string): string => {
+  if (!isRegistryDigest(digest)) {
+    throw new RegistryMirrorError(`Invalid registry digest: ${digest}`);
+  }
+  return digest;
+};
+
 /** Inspect a parsed manifest/index: list membership, child manifests, blobs. Pure — unit tested. */
 export const inspectManifest = (manifest: unknown): ManifestInspection => {
   if (!manifest || typeof manifest !== 'object') {
@@ -91,7 +101,11 @@ export const inspectManifest = (manifest: unknown): ManifestInspection => {
       if (!entry || typeof entry !== 'object' || typeof (entry as { digest?: unknown }).digest !== 'string') {
         throw new RegistryMirrorError(`Manifest list entry ${index} has no digest`);
       }
-      return (entry as { digest: string }).digest;
+      const digest = (entry as { digest: string }).digest;
+      if (!isRegistryDigest(digest)) {
+        throw new RegistryMirrorError(`Manifest list entry ${index} has an invalid digest: ${digest}`);
+      }
+      return digest;
     });
     return { isList: true, childManifestDigests: children, blobDigests: [] };
   }
@@ -99,13 +113,13 @@ export const inspectManifest = (manifest: unknown): ManifestInspection => {
   const blobs: string[] = [];
   const config = record.config;
   if (config && typeof config === 'object' && typeof (config as { digest?: unknown }).digest === 'string') {
-    blobs.push((config as { digest: string }).digest);
+    blobs.push(assertDigest((config as { digest: string }).digest));
   }
   const layers = record.layers;
   if (Array.isArray(layers)) {
     for (const layer of layers) {
       if (layer && typeof layer === 'object' && typeof (layer as { digest?: unknown }).digest === 'string') {
-        blobs.push((layer as { digest: string }).digest);
+        blobs.push(assertDigest((layer as { digest: string }).digest));
       }
     }
   }
@@ -126,14 +140,43 @@ interface TokenResponse {
   access_token?: string;
 }
 
-const sourceTokens = new Map<string, string>();
+interface CachedToken {
+  token: string;
+  expiresAt: number;
+}
+
+/** JWT `exp` minus a safety skew; opaque tokens fall back to a short TTL. */
+const tokenExpiryMs = (token: string): number => {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64').toString('utf8')) as {
+      exp?: unknown;
+    };
+    if (typeof payload.exp === 'number' && Number.isFinite(payload.exp) && payload.exp > 0) {
+      return payload.exp * 1000 - 60_000;
+    }
+  } catch {
+    // Opaque token — cannot read an expiry.
+  }
+  return Date.now() + 5 * 60_000;
+};
+
+const freshToken = (cache: Map<string, CachedToken>, key: string): string | undefined => {
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.token;
+  }
+  cache.delete(key);
+  return undefined;
+};
+
+const sourceTokens = new Map<string, CachedToken>();
 
 const getSourceToken = async (repo: string): Promise<string> => {
   if (!process.env.BALENACLOUD_TOKEN) {
     throw new MirroringNotConfiguredError();
   }
 
-  const cached = sourceTokens.get(repo);
+  const cached = freshToken(sourceTokens, repo);
   if (cached) {
     return cached;
   }
@@ -154,14 +197,16 @@ const getSourceToken = async (repo: string): Promise<string> => {
     throw new UpstreamError('balenaCloud registry token response contained no token');
   }
 
-  sourceTokens.set(repo, token);
+  sourceTokens.set(repo, { token, expiresAt: tokenExpiryMs(token) });
   return token;
 };
 
-const targetTokens = new Map<string, string>();
+const targetTokens = new Map<string, CachedToken>();
 
 const getTargetToken = async (repo: string, callerAuthorization: string): Promise<string> => {
-  const cached = targetTokens.get(repo);
+  // Keyed by caller so one user's registry token is never reused for another.
+  const cacheKey = `${callerAuthorization}|${repo}`;
+  const cached = freshToken(targetTokens, cacheKey);
   if (cached) {
     return cached;
   }
@@ -185,7 +230,7 @@ const getTargetToken = async (repo: string, callerAuthorization: string): Promis
     throw new RegistryMirrorError('Instance registry token response contained no token');
   }
 
-  targetTokens.set(repo, token);
+  targetTokens.set(cacheKey, { token, expiresAt: tokenExpiryMs(token) });
   return token;
 };
 
@@ -274,6 +319,7 @@ const copyBlobIfMissing = async (
   sourceToken: string,
   targetToken: string,
 ): Promise<void> => {
+  assertDigest(digest);
   const targetBase = targetRegistryUrl();
 
   const head = await fetch(`${targetBase}/v2/${repo}/blobs/${digest}`, {
@@ -393,6 +439,7 @@ export const verifyManifestAtTarget = async (
   digest: string,
   callerAuthorization: string,
 ): Promise<boolean> => {
+  assertDigest(digest);
   const token = await getTargetToken(repo, callerAuthorization);
   const head = await fetch(`${targetRegistryUrl()}/v2/${repo}/manifests/${digest}`, {
     method: 'HEAD',
@@ -426,6 +473,7 @@ export const mirrorImage = async (
     /** Recursively copy a manifest, deduped by digest: children first for lists, blobs before their manifest. */
     const copiedManifests = new Set<string>();
     const copyManifest = async (manifestDigest: string): Promise<void> => {
+      assertDigest(manifestDigest);
       if (copiedManifests.has(manifestDigest)) {
         return;
       }

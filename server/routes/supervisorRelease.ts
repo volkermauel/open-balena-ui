@@ -6,6 +6,7 @@ import {
   InstanceApiError,
   MirroringNotConfiguredError,
   NotFoundError,
+  RegistryMirrorError,
   UpstreamError,
 } from '../controller/supervisorRelease/errors';
 import {
@@ -87,6 +88,10 @@ const sendError = (res: Response, error: unknown): void => {
       success: false,
       message: error.message,
     });
+    return;
+  }
+  if (error instanceof RegistryMirrorError) {
+    res.status(502).json({ success: false, message: error.message });
     return;
   }
   if (error instanceof NotFoundError) {
