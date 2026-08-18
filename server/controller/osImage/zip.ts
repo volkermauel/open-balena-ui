@@ -260,6 +260,14 @@ export const extractZipEntry = async (zipPath: string, entry: ZipEntry, destinat
   const verifier = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       writtenBytes += chunk.length;
+      // Oversize-inflation guard: a corrupted or malicious deflate stream must not be
+      // able to inflate past the directory-declared size and fill the disk.
+      if (writtenBytes > entry.uncompressedSize) {
+        callback(
+          corruptZip(`entry '${entry.name}' inflated past its declared size of ${entry.uncompressedSize} bytes`),
+        );
+        return;
+      }
       crc = zlib.crc32(chunk, crc);
       callback(null, chunk);
     },

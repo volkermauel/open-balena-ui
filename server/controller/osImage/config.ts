@@ -37,14 +37,16 @@ export const buildDownloadConfigBody = (options: FleetConfigOptions): Record<str
 };
 
 /**
- * Public-key line shape accepted in `GATEWAY_SSH_PUBLIC_KEYS`: the standard openssh
- * authorized-key formats of the rsa/dss/ed25519/ecdsa families (optional trailing
- * comment). The design doc's `^ssh-(rsa|dss|ed25519|ecdsa)-` sketch cannot match any
- * real key (`ssh-rsa`/`ssh-ed25519` carry no second hyphen, ecdsa keys are
+ * Public-key line shape accepted in `GATEWAY_SSH_PUBLIC_KEYS`: the openssh authorized-key
+ * families — plain (`ssh-rsa`, `ssh-dss`, `ssh-ed25519`, `ecdsa-sha2-nistp{256,384,521}`),
+ * hardware-backed (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`) and
+ * certificate (`…-cert-v01@openssh.com`) forms — each with base64 key material and an
+ * optional trailing comment. The design doc's `^ssh-(rsa|dss|ed25519|ecdsa)-` sketch cannot
+ * match any real key (`ssh-rsa`/`ssh-ed25519` carry no second hyphen, ecdsa keys are
  * `ecdsa-sha2-nistp256`-prefixed), so the families' actual formats are accepted.
  */
 const GATEWAY_SSH_PUBLIC_KEY_PATTERN =
-  /^(ssh-(rsa|dss|ed25519)|ecdsa-sha2-nistp(256|384|521))\s+[A-Za-z0-9+/=]+(\s+.*)?$/;
+  /^((sk-)?(ssh-(rsa|dss|ed25519)|ecdsa-sha2-nistp(256|384|521)))(-cert-v01)?(@openssh\.com)?\s+[A-Za-z0-9+\/=]+(\s+.*)?$/;
 
 /**
  * Parse `GATEWAY_SSH_PUBLIC_KEYS` (newline-separated public keys) at request time:
@@ -66,7 +68,7 @@ export const parseGatewaySshPublicKeys = (raw: string | undefined): string[] => 
     if (!GATEWAY_SSH_PUBLIC_KEY_PATTERN.test(key)) {
       throw new OsImageError(
         500,
-        `GATEWAY_SSH_PUBLIC_KEYS contains an invalid public key (expected 'ssh-rsa|ssh-dss|ssh-ed25519|ecdsa-sha2-nistp(256|384|521) <base64> [comment]'): ${key.slice(0, 60)}`,
+        `GATEWAY_SSH_PUBLIC_KEYS contains an invalid public key (expected '[sk-](ssh-rsa|ssh-dss|ssh-ed25519|ecdsa-sha2-nistp(256|384|521))[-cert-v01][@openssh.com] <base64> [comment]'): ${key.slice(0, 60)}`,
       );
     }
   }

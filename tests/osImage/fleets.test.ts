@@ -22,6 +22,13 @@ test('mergeFleetRecords dedupes by id and keeps the server records', () => {
   assert.equal(merged[0]['app name'], 'server name (fresher)', 'server record wins over the seeded one');
 });
 
+test('mergeFleetRecords merges mixed id types by string value (server record wins)', () => {
+  const merged = mergeFleetRecords([fleet(42, 10, 'seeded name')], [fleet('42', 10, 'server name')]);
+  assert.equal(merged.length, 1, "number 42 and string '42' are the same fleet");
+  assert.equal(merged[0].id, '42');
+  assert.equal(merged[0]['app name'], 'server name');
+});
+
 test('mergeFleetRecords keeps the seeded fleet when the list request returns nothing usable', () => {
   const seeded = [fleet('abc', 7)];
   assert.deepEqual(mergeFleetRecords(seeded, []), seeded);

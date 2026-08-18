@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   DEFAULT_OS_IMAGE_SOURCE_REPO,
   MIRROR_CATALOG_CACHE_TTL_MS,
+  MIRROR_FETCH_TIMEOUT_MS,
   clearMirrorCatalogCache,
   extractOsVersions,
   fetchMirrorReleases,
@@ -106,6 +107,22 @@ test('nextReleasesUrlFromLink extracts the rel=next target', () => {
   assert.equal(nextReleasesUrlFromLink(link), 'https://api.github.com/repos/o/r/releases?per_page=100&page=2');
   assert.equal(nextReleasesUrlFromLink('<https://x>; rel="last"'), null);
   assert.equal(nextReleasesUrlFromLink(null), null);
+});
+
+test('nextReleasesUrlFromLink accepts unquoted and extended rel=next forms', () => {
+  assert.equal(
+    nextReleasesUrlFromLink(
+      '<https://api.github.com/repos/o/r/releases?per_page=100&page=2>; rel="next"; title="page 2"',
+    ),
+    'https://api.github.com/repos/o/r/releases?per_page=100&page=2',
+  );
+  assert.equal(
+    nextReleasesUrlFromLink('<https://api.github.com/repos/o/r/releases?per_page=100&page=2>; rel=next'),
+    'https://api.github.com/repos/o/r/releases?per_page=100&page=2',
+  );
+  // Near-misses must not match: a longer rel token or rel in another param.
+  assert.equal(nextReleasesUrlFromLink('<https://x>; rel="nextpage"'), null);
+  assert.equal(nextReleasesUrlFromLink('<https://x>; title="next"; rel="last"'), null);
 });
 
 // --- pure version extraction ---------------------------------------------------
@@ -314,5 +331,123 @@ test('findMirrorAsset fails with a typed 404 naming device type, version and mir
     });
   } finally {
     restore();
+  }
+});
+
+test('concurrent cold misses share one in-flight pagination run', async () => {
+  const calls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input.toString();
+    calls.push(url);
+    // Hold the only page back so both callers join while the run is in flight.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    return new Response(JSON.stringify(rawGithubReleases), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const [first, second] = await Promise.all([fetchMirrorReleases(), fetchMirrorReleases()]);
+    assert.equal(calls.length, 1, 'both cold misses must share one pagination run');
+    assert.deepEqual(first, second);
+    assert.ok(first.length > 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a rejected pagination run evicts itself instead of poisoning the cache', async () => {
+  let failing = true;
+  const { calls, restore } = mockFetch(() =>
+    failing ? { throw: new Error('ECONNREFUSED') } : { status: 200, body: rawGithubReleases },
+  );
+  try {
+    await assert.rejects(fetchMirrorReleases(), /Failed to reach api\.github\.com/);
+    const callsAfterFailure = calls.length;
+
+    failing = false;
+    const releases = await fetchMirrorReleases();
+    assert.ok(releases.length > 0, 'a later caller must get a fresh run, not the cached rejection');
+    assert.equal(calls.length, callsAfterFailure + 1);
+  } finally {
+    restore();
+  }
+});
+
+test('a timed-out catalog fetch surfaces as a typed 502 naming the timeout', async () => {
+  const { restore } = mockFetch(() => ({
+    throw: new DOMException('signal timed out', 'TimeoutError'),
+  }));
+  assert.equal(MIRROR_FETCH_TIMEOUT_MS, 30 * 1000);
+  try {
+    await assert.rejects(fetchMirrorReleases(), (error: unknown) => {
+      assert.ok(error instanceof OsImageError);
+      assert.equal(error.statusCode, 502);
+      assert.match(error.message, /signal timed out/);
+      return true;
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('catalog and SHA256SUMS fetches carry an abort-timeout signal', async () => {
+  const signals: unknown[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input.toString();
+    signals.push(init?.signal);
+    if (url.endsWith('/SHA256SUMS')) {
+      return new Response('', { status: 200 });
+    }
+    return new Response(JSON.stringify(rawGithubReleases), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await findMirrorAsset('raspberrypi4-64', '7.4.0+rev5');
+    assert.equal(signals.length, 2, 'listing + sums fetch');
+    for (const signal of signals) {
+      assert.ok(signal instanceof AbortSignal, 'every mirror fetch must be timeout-bounded');
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('pagination merges two pages duplicate-free and a missing Link header terminates', async () => {
+  const page2 = [
+    githubRelease('v3.0.0', [githubAsset('balenaos-3.0.0-raspberrypi4-64.img.zip')]),
+    // Same balenaOS version as page 1 under another tag: versions must still dedupe.
+    githubRelease('v7.4.0+rev5-again', [githubAsset('balenaos-7.4.0+rev5-raspberrypi4-64.img.zip')]),
+  ];
+  const { calls, restore } = mockFetch((url) => {
+    if (url.endsWith('page=2')) {
+      return { status: 200, body: page2 };
+    }
+    return {
+      status: 200,
+      body: rawGithubReleases,
+      link: '<https://api.github.com/repos/o/r/releases?per_page=100&page=2>; rel="next"',
+    };
+  });
+
+  try {
+    const releases = await fetchMirrorReleases();
+    assert.equal(calls.length, 2);
+    assert.equal(releases.length, rawGithubReleases.length + page2.length, 'both pages merge exactly once');
+    const tagNames = releases.map((release) => release.tagName);
+    assert.equal(new Set(tagNames).size, tagNames.length, 'merged release tags must be duplicate-free');
+    // The cached merge dedupes the version served by two tags into one dropdown entry.
+    assert.deepEqual(await listOsVersions('raspberrypi4-64'), ['7.5.0', '7.4.0+rev5', '7.4.0+rev4', '3.0.0']);
+  } finally {
+    restore();
+  }
+
+  // A response without a Link header terminates after a single fetch carrying all entries.
+  clearMirrorCatalogCache();
+  const terminal = mockFetch(() => ({ status: 200, body: rawGithubReleases }));
+  try {
+    const releases = await fetchMirrorReleases();
+    assert.equal(terminal.calls.length, 1, 'no Link header means no further pages');
+    assert.equal(releases.length, rawGithubReleases.length, 'all entries from the single page');
+  } finally {
+    terminal.restore();
   }
 });

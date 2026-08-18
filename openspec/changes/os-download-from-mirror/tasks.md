@@ -39,3 +39,33 @@
      remove balenaCloud catalog references for this feature
 - [x] 8. `npm test`, `npx tsc --noEmit`, `npm run build`, `npx prettier --check .` green;
      `openspec validate os-download-from-mirror --strict` and `openspec validate fix-image-push-timestamp --strict` pass
+
+## Review fixes
+
+Independent review (0 blockers, 0 majors) — all findings addressed:
+
+- [x] `zip.ts`: oversize-inflation guard — the verify transform fails as soon as `writtenBytes` exceeds the entry's
+      declared uncompressed size (tested: declared 1 B inflating to 64 KiB → typed corrupt-archive error, destination
+      left without the full payload)
+- [x] `tests/osImage/zip.test.ts`: hand-built zip64 fixture (CD 0xFFFF/0xFFFFFFFF placeholders + zip64 extra field,
+      zip64 EOCD locator + EOCD; local sizes real) exercising `parseZip64Tail`/`readZipEntries`; shared fixture builders
+      moved to `tests/osImage/helpers.ts`
+- [x] `versions.ts`: single-flight catalog cache — the in-flight promise is stored in `mirrorCatalogCache`, cold misses
+      share one pagination run, TTL stays 5 min, a rejected run evicts itself (tested)
+- [x] fetch timeouts: asset download 10 min (`MIRROR_ASSET_DOWNLOAD_TIMEOUT_MS`), GitHub API catalog and SHA256SUMS
+      fetches 30 s (`MIRROR_FETCH_TIMEOUT_MS`); timeout rejections surface as the existing typed 502s
+- [x] `design.md` Migration Plan rewritten honestly: legacy `.img` pristine entries are not reused (key is now `.zip`),
+      they remain for status/LRU only, the cached badge may precede a re-download; removed the false "fallback string
+      compare" claim (balena-semver rcompare degrades gracefully)
+- [x] `nextReleasesUrlFromLink`: per-entry parsing accepting `rel=next`, `rel="next"; title="page 2"` forms (tested,
+      including near-miss rejections)
+- [x] `OsDownloadDialog.tsx`: fleet/device-type load failures land in a dedicated `choicesError` state rendered at the
+      fleet dropdown
+- [x] `fleets.test.ts`: mixed-id-type merge case (seeded `42` + server `'42'` → one entry, server record wins)
+- [x] `config.ts`: gateway SSH key pattern generalized to `sk-` hardware and `-cert-v01@openssh.com` certificate forms
+      (existing keys re-validated, new fixtures, error still names the env var)
+- [x] `tests/osImage/prepareJob.test.ts`: runOsImageJob-level integration tests (mocked fetch + real zip fixture +
+      patched `balena-config-json.write`): ordering listing → sums → asset → fleet config, gateway keys present in the
+      injected config, artifact committed, working image cleaned up — plus the unzip-failure cleanup path
+- [x] pagination tests: two-page merge duplicate-free (release- and version-level), no-Link response terminates after
+      one fetch

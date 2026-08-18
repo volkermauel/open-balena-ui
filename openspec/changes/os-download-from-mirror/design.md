@@ -20,8 +20,9 @@ OData does not support the `is of-class` filter the dialog uses.
 
 - **Releases API as catalog.** `GET https://api.github.com/repos/<OS_IMAGE_SOURCE_REPO>/releases` (anonymous,
   `per_page=100`, paginate while links remain). A release contributes a version for device type `<dt>` iff an asset
-  matches `^balenaos-(?<v>.+)-<dt>\.img\.zip$`. Version order: `balena-semver` desc, fallback string compare. The
-  asset's `browser_download_url` is the download source; `SHA256SUMS` (same release) maps `<asset name> → sha256`.
+  matches `^balenaos-(?<v>.+)-<dt>\.img\.zip$`. Version order: `balena-semver` desc (its rcompare degrades gracefully on
+  odd versions — no separate fallback). The asset's `browser_download_url` is the download source; `SHA256SUMS` (same
+  release) maps `<asset name> → sha256`.
 - **Pristine cache holds the verified zip.** Download asset → stream to `<cache>/pristine/.../<asset>.zip` →
   sha256-verify against SHA256SUMS → unzip at prepare time → inject → recompress (`zip`/`gz` per request). Verification
   happens once per pristine download, not per fleet artifact.
@@ -47,8 +48,10 @@ OData does not support the `is of-class` filter the dialog uses.
 
 ## Migration Plan
 
-None — no persisted state. Previously cached pristine artifacts (balenaCloud-sourced, keyed `<dt>/<version>/<variant>`)
-remain consumable if their version also exists on the mirror; otherwise they age out of the cache.
+None — no persisted state. Legacy pristine `.img` artifacts (balenaCloud-sourced) are NOT reused by new downloads: the
+pristine cache key is now the `.zip` asset, so preparing such a version re-downloads it from the mirror. Legacy entries
+still surface in cache status and age out through LRU eviction — the "cached" badge may therefore show for a version
+whose next prepare re-downloads.
 
 ## Open Questions
 

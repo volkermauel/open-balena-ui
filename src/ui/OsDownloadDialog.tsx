@@ -95,6 +95,8 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
   const [cachedVersions, setCachedVersions] = React.useState<Set<string>>(new Set());
   const [versionsLoading, setVersionsLoading] = React.useState(false);
   const [versionsError, setVersionsError] = React.useState<string | null>(null);
+  // Fleet/device-type load failures land here, separate from version-list errors.
+  const [choicesError, setChoicesError] = React.useState<string | null>(null);
 
   const [version, setVersion] = React.useState('');
   // The mirror publishes production images only — the variant selector is gone.
@@ -136,6 +138,7 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
     }
 
     let cancelled = false;
+    setChoicesError(null);
     const fetchChoices = async () => {
       try {
         const [deviceTypeRecords, fleetRecords] = await Promise.all([
@@ -166,7 +169,7 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
         }
       } catch (error) {
         if (!cancelled) {
-          setVersionsError(error instanceof Error ? error.message : 'Failed to load fleets or device types');
+          setChoicesError(error instanceof Error ? error.message : 'Failed to load fleets or device types');
         }
       }
     };
@@ -395,6 +398,12 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
               <FormControlLabel value='gz' control={<Radio />} label='.gz' />
             </RadioGroup>
           </FormControl>
+
+          {choicesError && (
+            <Alert severity='error' sx={{ mb: 2 }}>
+              {choicesError}
+            </Alert>
+          )}
 
           <FormControl fullWidth disabled={busy}>
             <InputLabel id='os-download-fleet'>Fleet</InputLabel>

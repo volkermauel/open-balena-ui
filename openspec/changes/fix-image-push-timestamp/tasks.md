@@ -6,3 +6,7 @@
        added: `tests/supervisorRelease/instance.test.ts` — both seed flows call the same shared `createImage`, so the
        single payload assertion covers supervisor and hostOS seeding
 - [x] 3. `npm test` green
+
+## Review fixes
+
+- [x] Nothing — the review findings all concerned `os-download-from-mirror`; no file of this change was touched.

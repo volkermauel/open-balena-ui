@@ -138,6 +138,9 @@ const silentlyRemove = async (filePath: string | undefined): Promise<void> => {
   }
 };
 
+/** Hard ceiling for one mirror asset download (multi-GB zips can be slow). */
+export const MIRROR_ASSET_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Stream the mirror release asset for (deviceType, version) into `tmp/`, hashing the
  * bytes as they arrive, and atomically commit the sha256-verified archive into the
@@ -159,7 +162,7 @@ export const downloadPristineMirrorImage = async (job: OsImageJobEntry, destinat
 
   let response: Response;
   try {
-    response = await fetch(asset.url);
+    response = await fetch(asset.url, { signal: AbortSignal.timeout(MIRROR_ASSET_DOWNLOAD_TIMEOUT_MS) });
   } catch (error) {
     throw new OsImageError(
       502,

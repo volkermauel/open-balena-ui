@@ -212,6 +212,16 @@ test('parseGatewaySshPublicKeys splits on newlines, trims and drops empty lines'
   ]);
 });
 
+test('parseGatewaySshPublicKeys accepts hardware (sk-) and certificate (-cert-v01) key forms', () => {
+  const keys =
+    'sk-ssh-ed25519@openssh.com AAAAC3NzaC1lZDI1NTE5AAAAI yubikey\n' +
+    'sk-ecdsa-sha2-nistp256@openssh.com AAAAE2VjZHNh ecdsa-token\n' +
+    'ssh-ed25519-cert-v01@openssh.com AAAAC3NzaC1lZDI1NTE5 ed25519-cert\n' +
+    'ecdsa-sha2-nistp384-cert-v01@openssh.com AAAAE2VjZHNh nistp384-cert\n' +
+    'sk-ssh-ed25519-cert-v01@openssh.com AAAAC3NzaC1lZDI1NTE5 sk-cert';
+  assert.deepEqual(parseGatewaySshPublicKeys(keys), keys.split('\n'));
+});
+
 test('parseGatewaySshPublicKeys rejects malformed keys with a config error naming the env var', () => {
   for (const invalid of [
     'not-a-key',
@@ -219,6 +229,7 @@ test('parseGatewaySshPublicKeys rejects malformed keys with a config error namin
     'ssh-ed25519-with-typo AAAAC3Nza',
     'ssh-rsa !!!not-base64!!!',
     'AAAAC3NzaC1lZDI1NTE5 (missing the type prefix)',
+    'sk-rsa AAAAC3NzaC1lZDI1NTE5 (sk- must precede a real family)',
   ]) {
     assert.throws(
       () => parseGatewaySshPublicKeys(invalid),

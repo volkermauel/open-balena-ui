@@ -1,69 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { test } from 'node:test';
 import { extractZipEntry, pickImageEntry, readZipEntries } from '../../server/controller/osImage/zip';
 import { OsImageError } from '../../server/controller/osImage/errors';
-
-/**
- * Minimal ZIP writer for fixtures: local file headers followed by a central
- * directory and EOCD, mirroring what the mirror's release zips look like
- * (deflate or stored entries, no data descriptors, sizes in the directory).
- */
-const makeZip = (entries: Array<{ name: string; data: Buffer; store?: boolean }>): Buffer => {
-  const locals: Buffer[] = [];
-  const centrals: Buffer[] = [];
-  let offset = 0;
-
-  for (const entry of entries) {
-    const nameBytes = Buffer.from(entry.name, 'utf8');
-    const crc = zlib.crc32(entry.data) >>> 0;
-    const stored = entry.store === true;
-    const payload = stored ? entry.data : zlib.deflateRawSync(entry.data);
-
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(stored ? 0 : 8, 8); // compression method
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(payload.length, 18);
-    local.writeUInt32LE(entry.data.length, 22);
-    local.writeUInt16LE(nameBytes.length, 26);
-    locals.push(local, nameBytes, payload);
-
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(stored ? 0 : 8, 10);
-    central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(payload.length, 20);
-    central.writeUInt32LE(entry.data.length, 24);
-    central.writeUInt16LE(nameBytes.length, 28);
-    central.writeUInt32LE(offset, 42);
-    centrals.push(central, nameBytes);
-
-    offset += 30 + nameBytes.length + payload.length;
-  }
-
-  const centralDirectory = Buffer.concat(centrals);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(entries.length, 10);
-  eocd.writeUInt32LE(centralDirectory.length, 12);
-  eocd.writeUInt32LE(Buffer.concat(locals).length, 16);
-
-  return Buffer.concat([...locals, centralDirectory, eocd]);
-};
-
-const withTempDir = async (fn: (dir: string) => Promise<void>): Promise<void> => {
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'obui-os-image-zip-'));
-  try {
-    await fn(dir);
-  } finally {
-    await fsp.rm(dir, { recursive: true, force: true });
-  }
-};
+import { makeZip, makeZip64, withTempDir } from './helpers';
 
 test('readZipEntries lists entries with directory sizes and crc', async () => {
   await withTempDir(async (dir) => {
@@ -223,5 +166,51 @@ test('a round-tripped multi-entry archive extracts the right entry', async () =>
       createHash('sha256').update(extracted).digest('hex'),
       createHash('sha256').update(image).digest('hex'),
     );
+  });
+});
+
+test('extractZipEntry aborts a deflate stream that inflates past its declared size', async () => {
+  await withTempDir(async (dir) => {
+    const payload = Buffer.alloc(64 * 1024, 3); // inflates far past the declared 1 B
+    const zipPath = path.join(dir, 'lying.zip');
+    const destination = path.join(dir, 'out.img');
+    await fsp.writeFile(zipPath, makeZip([{ name: 'balena-image.img', data: payload, declaredUncompressedSize: 1 }]));
+
+    const entry = pickImageEntry(await readZipEntries(zipPath));
+    assert.equal(entry.uncompressedSize, 1);
+    await assert.rejects(extractZipEntry(zipPath, entry, destination), (error: unknown) => {
+      assert.ok(error instanceof OsImageError);
+      assert.equal(error.statusCode, 502);
+      // The in-flight guard fires — not the post-hoc size check after a full inflation.
+      assert.match(error.message, /inflated past its declared size/);
+      return true;
+    });
+
+    const leftover = await fsp.readFile(destination).catch(() => null);
+    assert.ok(
+      leftover === null || leftover.length < payload.length,
+      'the destination must not be left with the full payload',
+    );
+  });
+});
+
+test('readZipEntries resolves zip64 placeholders through the zip64 EOCD and extra field', async () => {
+  await withTempDir(async (dir) => {
+    const payload = Buffer.alloc(4096, 11);
+    const zipPath = path.join(dir, 'zip64.zip');
+    const destination = path.join(dir, 'out.img');
+    await fsp.writeFile(zipPath, makeZip64([{ name: 'balena-image.img', data: payload }]));
+
+    const entries = await readZipEntries(zipPath);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].name, 'balena-image.img');
+    // The 0xFFFFFFFF placeholders must be replaced by the zip64 extra-field values.
+    assert.equal(entries[0].uncompressedSize, payload.length);
+    assert.equal(entries[0].compressedSize, zlib.deflateRawSync(payload).length);
+    assert.equal(entries[0].localHeaderOffset, 0);
+    assert.equal(entries[0].crc32, zlib.crc32(payload) >>> 0);
+
+    await extractZipEntry(zipPath, entries[0], destination);
+    assert.ok((await fsp.readFile(destination)).equals(payload));
   });
 });

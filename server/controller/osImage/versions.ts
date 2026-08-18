@@ -9,6 +9,9 @@ export const GITHUB_API_BASE_URL = 'https://api.github.com';
 /** How long the in-process releases cache stays fresh (anonymous API budget: 60 req/h). */
 export const MIRROR_CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
 
+/** Timeout for small mirror fetches (GitHub API catalog pages, SHA256SUMS text). */
+export const MIRROR_FETCH_TIMEOUT_MS = 30 * 1000;
+
 /**
  * The configured OS image mirror (`OS_IMAGE_SOURCE_REPO`): a GitHub `<owner>/<repo>`
  * that publishes `balenaos-<version>-<machine>.img.zip` release assets. Validated
@@ -100,14 +103,18 @@ export const nextReleasesUrlFromLink = (link: string | null): string | null => {
     return null;
   }
   for (const part of link.split(',')) {
-    const match = /^\s*<([^>]+)>\s*;\s*rel="next"\s*$/.exec(part);
-    if (match) {
-      return match[1];
+    const entry = /^\s*<([^>]+)>\s*;\s*(.+)$/.exec(part);
+    // `rel` may be quoted or bare (`rel="next"` / `rel=next`) and further params
+    // (e.g. `title="page 2"`) may follow it within the same comma-separated entry.
+    if (entry && /(^|;)\s*rel="?next"?\s*(;|$)/i.test(entry[2])) {
+      return entry[1];
     }
   }
   return null;
 };
 
+// balena-semver's rcompare degrades gracefully for odd versions (it falls back to
+// a plain compare internally), so no separate string fallback is wired in here.
 const compareOsVersionDesc = (a: string, b: string): number => balenaSemver.rcompare(a, b);
 
 /**
@@ -131,8 +138,10 @@ interface MirrorCatalogCacheEntry {
   releases: MirrorRelease[];
   fetchedAt: number;
 }
+/** A resolved catalog entry, or the in-flight pagination run a cold miss started. */
+type MirrorCatalogCache = MirrorCatalogCacheEntry | Promise<MirrorRelease[]>;
 
-let mirrorCatalogCache: MirrorCatalogCacheEntry | null = null;
+let mirrorCatalogCache: MirrorCatalogCache | null = null;
 
 /** Drop the in-process releases cache (tests / forced re-read). */
 export const clearMirrorCatalogCache = (): void => {
@@ -140,7 +149,8 @@ export const clearMirrorCatalogCache = (): void => {
 };
 
 /** Current cache entry for inspection; tests backdate `fetchedAt` to exercise the TTL. */
-export const peekMirrorCatalogCache = (): MirrorCatalogCacheEntry | null => mirrorCatalogCache;
+export const peekMirrorCatalogCache = (): MirrorCatalogCacheEntry | null =>
+  mirrorCatalogCache !== null && 'releases' in mirrorCatalogCache ? mirrorCatalogCache : null;
 
 /** Parse a `SHA256SUMS` payload (`<sha256>  <filename>` lines) into a map. Pure — unit tested. */
 export const parseSha256Sums = (content: string): Map<string, string> => {
@@ -154,18 +164,8 @@ export const parseSha256Sums = (content: string): Map<string, string> => {
   return sums;
 };
 
-/**
- * Fetch the mirror's releases via the GitHub API (anonymous), following Link-header
- * pagination. Results are cached in-process for `MIRROR_CATALOG_CACHE_TTL_MS` so
- * version listings and prepare jobs share the anonymous-API budget.
- */
-export const fetchMirrorReleases = async (): Promise<MirrorRelease[]> => {
-  const repo = osImageSourceRepo();
-
-  if (mirrorCatalogCache && Date.now() - mirrorCatalogCache.fetchedAt < MIRROR_CATALOG_CACHE_TTL_MS) {
-    return mirrorCatalogCache.releases;
-  }
-
+/** One pagination run over the GitHub releases API; every failure maps to a typed 502. */
+const paginateMirrorReleases = async (repo: string): Promise<MirrorRelease[]> => {
   const releases: MirrorRelease[] = [];
   let url: string | null = githubReleasesUrl(repo);
   let pages = 0;
@@ -177,7 +177,7 @@ export const fetchMirrorReleases = async (): Promise<MirrorRelease[]> => {
         throw new OsImageError(502, `api.github.com release listing for ${repo} did not terminate after 50 pages`);
       }
 
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(MIRROR_FETCH_TIMEOUT_MS) });
       if (!response.ok) {
         const detail = await response.text().catch(() => '');
         throw new OsImageError(
@@ -200,9 +200,45 @@ export const fetchMirrorReleases = async (): Promise<MirrorRelease[]> => {
       }`,
     );
   }
-
-  mirrorCatalogCache = { releases, fetchedAt: Date.now() };
   return releases;
+};
+
+/**
+ * Fetch the mirror's releases via the GitHub API (anonymous), following Link-header
+ * pagination. Results are cached in-process for `MIRROR_CATALOG_CACHE_TTL_MS` so
+ * version listings and prepare jobs share the anonymous-API budget; concurrent cold
+ * misses share a single in-flight pagination run, and a rejected run evicts itself
+ * so the cache is never poisoned.
+ */
+export const fetchMirrorReleases = (): Promise<MirrorRelease[]> => {
+  const repo = osImageSourceRepo();
+
+  if (mirrorCatalogCache) {
+    if ('releases' in mirrorCatalogCache) {
+      if (Date.now() - mirrorCatalogCache.fetchedAt < MIRROR_CATALOG_CACHE_TTL_MS) {
+        return Promise.resolve(mirrorCatalogCache.releases);
+      }
+    } else {
+      // A cold miss is already paginating: share that run instead of racing a second
+      // one against the same anonymous-API budget.
+      return mirrorCatalogCache;
+    }
+  }
+
+  const inFlight = paginateMirrorReleases(repo).then(
+    (releases) => {
+      mirrorCatalogCache = { releases, fetchedAt: Date.now() };
+      return releases;
+    },
+    (error: unknown) => {
+      if (mirrorCatalogCache === inFlight) {
+        mirrorCatalogCache = null;
+      }
+      throw error;
+    },
+  );
+  mirrorCatalogCache = inFlight;
+  return inFlight;
 };
 
 /**
@@ -250,7 +286,7 @@ export const findMirrorAsset = async (deviceType: string, version: string): Prom
 
   let sumsBody: string;
   try {
-    const response = await fetch(sumsAsset.url);
+    const response = await fetch(sumsAsset.url, { signal: AbortSignal.timeout(MIRROR_FETCH_TIMEOUT_MS) });
     if (!response.ok) {
       throw new OsImageError(502, `Fetching SHA256SUMS from the mirror ${repo} failed with status ${response.status}`);
     }
