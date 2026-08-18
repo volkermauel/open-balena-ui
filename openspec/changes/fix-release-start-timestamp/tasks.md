@@ -1,0 +1,3 @@
+- [x] 1. `start_timestamp` in `createHostosRelease` and `createRelease` bodies (done)
+- [x] 2. Test assertions for the release POST body (hostOS imperative, supervisor imperative) (done)
+- [x] 3. `npm test` 150/150, `npx tsc --noEmit`, `npx prettier --check .` green (done)
