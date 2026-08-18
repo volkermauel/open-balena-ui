@@ -125,9 +125,14 @@ test('an existing unsized image gets its size recorded without other writes', ()
 });
 
 test('repo names are extracted from balenaCloud image locations', () => {
+  // The v2/ segment stays: bare single-segment names are ungrantable scopes.
   assert.equal(
     repoFromLocation('registry2.balena-cloud.com/v2/830e5bb7294e5583620451186e08b5de'),
-    '830e5bb7294e5583620451186e08b5de',
+    'v2/830e5bb7294e5583620451186e08b5de',
+  );
+  assert.equal(
+    repoFromLocation('registry2.balena-cloud.com/v2/resin/aarch64-supervisor'),
+    'v2/resin/aarch64-supervisor',
   );
   assert.throws(() => repoFromLocation('example.com/some/repo'));
 });
@@ -413,7 +418,7 @@ test('a cold seed mirrors the tag-resolved digest into the hook-assigned repo', 
     assert.deepEqual(result, {
       appId: 99,
       releaseId: 42,
-      images: [{ repo: ASSIGNED_REPO, digest: sha('d') }],
+      images: [{ repo: `v2/${ASSIGNED_REPO}`, digest: sha('d') }],
     });
 
     const instancePosts = seedCalls.filter(
@@ -457,14 +462,14 @@ test('a cold seed mirrors the tag-resolved digest into the hook-assigned repo', 
     );
     assert.ok(registryWrites.length > 0);
     for (const write of registryWrites) {
-      assert.ok(write.url.includes(`/v2/${ASSIGNED_REPO}/`), `write hit the assigned repo: ${write.url}`);
+      assert.ok(write.url.includes(`/v2/v2/${ASSIGNED_REPO}/`), `write hit the assigned repo: ${write.url}`);
     }
     // …and the mirrored manifest was verified there by digest.
     assert.ok(
       seedCalls.some(
         (call) =>
           call.method === 'HEAD' &&
-          call.url === `https://registry2.balena.example.com/v2/${ASSIGNED_REPO}/manifests/${sha('d')}`,
+          call.url === `https://registry2.balena.example.com/v2/v2/${ASSIGNED_REPO}/manifests/${sha('d')}`,
       ),
       'digest is verified at the assigned target repo',
     );
@@ -486,7 +491,7 @@ test('a digest change re-seeds the new image and links it into the existing rele
     assert.deepEqual(result, {
       appId: 99,
       releaseId: 42,
-      images: [{ repo: ASSIGNED_REPO, digest: sha('f') }],
+      images: [{ repo: `v2/${ASSIGNED_REPO}`, digest: sha('f') }],
     });
 
     const instancePosts = seedCalls.filter(

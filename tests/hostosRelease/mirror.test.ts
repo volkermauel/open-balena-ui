@@ -223,6 +223,7 @@ test('mirrorImageFromSource copies from an anonymous source without any credenti
       TARGET_REPO,
     );
 
+    // Direct mirror call: echoes the repo it was given; the seed passes v2/-prefixed.
     assert.deepEqual(result, { repo: TARGET_REPO, digest: sha('e') });
 
     const tokenRequest = calls.find((call) => call.url.startsWith('https://ghcr.io/token'))!;
@@ -252,7 +253,7 @@ test('a cold import creates image, release and link, then mirrors and tags in or
     assert.deepEqual(result, {
       appId: 99,
       releaseId: 42,
-      image: { repo: ASSIGNED_REPO, digest: sha('e') },
+      image: { repo: `v2/${ASSIGNED_REPO}`, digest: sha('e') },
     });
 
     const instancePosts = posts().filter((call) => call.url.includes('api.balena.example.com'));
@@ -284,7 +285,7 @@ test('a cold import creates image, release and link, then mirrors and tags in or
     );
     assert.ok(registryWrites.length > 0);
     for (const write of registryWrites) {
-      assert.ok(write.url.includes(`/v2/${ASSIGNED_REPO}/`), `write hit the assigned repo: ${write.url}`);
+      assert.ok(write.url.includes(`/v2/v2/${ASSIGNED_REPO}/`), `write hit the assigned repo: ${write.url}`);
     }
 
     const releasePost = instancePosts[1];

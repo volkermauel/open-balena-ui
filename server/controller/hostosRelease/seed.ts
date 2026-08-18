@@ -330,7 +330,7 @@ export const seedHostosRelease = async (
     return {
       appId: app.id,
       releaseId: requireSeedId(releaseId, 'release'),
-      image: { repo: repo ?? hostosTargetRepo(machine), digest },
+      image: { repo: repo ?? `v2/${hostosTargetRepo(machine)}`, digest },
     };
   });
 };
