@@ -539,9 +539,12 @@ export const getDeviceSupervisorState = async (
     should_be_managed_by__release?: TargetRow[] | TargetRow | null;
   }
 
+  // v7, not v6: the `device should be managed by release` fact type only
+  // exists in the v7 translation (v6 answers 500 "Could not resolve
+  // relationship mapping"). Release version fields are identical on v7.
   const rows = await odataGet<Row>(
     auth,
-    `/v6/device(${deviceId})?$select=supervisor_version,should_be_managed_by__release` +
+    `/v7/device(${deviceId})?$select=supervisor_version,should_be_managed_by__release` +
       `&$expand=should_be_managed_by__release($select=id,${versionField},semver)`,
   );
 
@@ -568,7 +571,8 @@ export const patchDeviceSupervisorRelease = async (
   deviceId: number,
   releaseId: number,
 ): Promise<void> => {
-  const res = await odataPatch(auth, `/v6/device(${deviceId})`, {
+  // v7 for the same reason as the state read: v6 has no managed-by mapping.
+  const res = await odataPatch(auth, `/v7/device(${deviceId})`, {
     should_be_managed_by__release: releaseId,
   });
 

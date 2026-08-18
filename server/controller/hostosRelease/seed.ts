@@ -148,8 +148,10 @@ export interface HostosVersionEntry {
 
 /**
  * List the hostOS versions available in the mirror for a device type,
- * newest-first, annotated with whether each version is already imported
- * (a matching release exists on the device type's hostapp app).
+ * newest-first, annotated with whether each version is fully imported
+ * (a matching release that also carries its `version` tag exists on the
+ * device type's hostapp app — the tag is the seed's last step, so a release
+ * row without it is a crashed import and stays importable/resumable).
  */
 export const resolveHostosVersionsForDeviceType = async (
   auth: InstanceAuth,
@@ -165,16 +167,22 @@ export const resolveHostosVersionsForDeviceType = async (
   const seededByRaw = new Map(instanceReleases.map((release) => [release.rawVersion, release.id]));
   const seededBySemver = new Map(instanceReleases.map((release) => [release.semver ?? '', release.id]));
 
-  const versions: HostosVersionEntry[] = catalog.map((entry: HostosVersion) => {
+  const versions: HostosVersionEntry[] = [];
+  for (const entry of catalog) {
     const releaseId = seededByRaw.get(entry.tag) ?? seededBySemver.get(entry.version);
-    return {
+    // A release row alone may be the leftover of a crashed import (rows are
+    // created before bytes/size/tag): only a release that also carries its
+    // version tag counts as imported, otherwise the entry stays selectable
+    // and re-importing resumes the remaining steps idempotently.
+    const seeded = releaseId !== undefined && (await hasReleaseTag(auth, releaseId, 'version', entry.version));
+    versions.push({
       tag: entry.tag,
       version: entry.version,
       parsable: entry.parsable,
-      seeded: releaseId !== undefined,
+      seeded,
       ...(releaseId !== undefined ? { releaseId } : {}),
-    };
-  });
+    });
+  }
 
   return { deviceType, versions };
 };
