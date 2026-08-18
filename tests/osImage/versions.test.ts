@@ -1,117 +1,318 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  DEFAULT_OS_IMAGE_SOURCE_REPO,
+  MIRROR_CATALOG_CACHE_TTL_MS,
+  clearMirrorCatalogCache,
   extractOsVersions,
+  fetchMirrorReleases,
+  findMirrorAsset,
+  githubReleasesUrl,
   listOsVersions,
-  osVersionsUrl,
-  releaseListFilter,
+  nextReleasesUrlFromLink,
+  osImageSourceRepo,
+  parseSha256Sums,
+  peekMirrorCatalogCache,
+  toMirrorReleases,
+  versionFromAssetName,
+  type MirrorRelease,
 } from '../../server/controller/osImage/versions';
 import { OsImageError } from '../../server/controller/osImage/errors';
 
-const fakeFetch = (handler: (url: string) => { status: number; body?: unknown; throw?: Error }) => {
-  return (async (input: RequestInfo | URL): Promise<Response> => {
+const originalFetch = globalThis.fetch;
+
+const githubAsset = (
+  name: string,
+  url = `https://mirror.test/${name}`,
+): { name: string; browser_download_url: string } => ({
+  name,
+  browser_download_url: url,
+});
+
+const githubRelease = (tagName: string, assets: Array<{ name: string; browser_download_url: string }>) => ({
+  tag_name: tagName,
+  assets,
+});
+
+/** Mock fetch serving canned responses per URL prefix; records every call. */
+const mockFetch = (
+  handler: (url: string) => { status: number; body?: unknown; contentType?: string; link?: string } | { throw: Error },
+): { calls: string[]; restore: () => void } => {
+  const calls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === 'string' ? input : input.toString();
+    calls.push(url);
     const result = handler(url);
-    if (result.throw) {
+    if ('throw' in result) {
       throw result.throw;
     }
-    return new Response(result.body === undefined ? null : JSON.stringify(result.body), {
+    const body = typeof result.body === 'string' ? result.body : JSON.stringify(result.body);
+    return new Response(result.body === undefined ? null : body, {
       status: result.status,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        ...(result.contentType ? { 'Content-Type': result.contentType } : {}),
+        ...(result.link ? { Link: result.link } : {}),
+      },
     });
   }) as typeof fetch;
+  return { calls, restore: () => (globalThis.fetch = originalFetch) };
 };
 
-test('extractOsVersions deduplicates raw_version values', () => {
-  const payload = { d: [{ raw_version: '3.2.7' }, { raw_version: '3.2.7' }, { raw_version: '3.2.6' }] };
-  assert.deepEqual(extractOsVersions(payload), ['3.2.7', '3.2.6']);
+test.beforeEach(() => {
+  clearMirrorCatalogCache();
+  delete process.env.OS_IMAGE_SOURCE_REPO;
 });
 
-test('extractOsVersions orders semver-descending regardless of input order', () => {
-  const payload = [
-    { raw_version: '2.9.1' },
-    { raw_version: '3.2.7' },
-    { raw_version: '10.0.0' },
-    { raw_version: '3.2.7+rev1' },
-    { raw_version: 'v3.2.8' },
-    { raw_version: '3.2.7' },
-  ];
-  assert.deepEqual(extractOsVersions(payload), ['10.0.0', 'v3.2.8', '3.2.7', '3.2.7+rev1', '2.9.1']);
+test.afterEach(() => {
+  clearMirrorCatalogCache();
+  delete process.env.OS_IMAGE_SOURCE_REPO;
+  globalThis.fetch = originalFetch;
 });
 
-test('extractOsVersions skips entries without a raw_version string', () => {
-  const payload = {
-    d: [{ raw_version: '3.2.7' }, { raw_version: 42 }, {}, { raw_version: '' }, { raw_version: '3.1.0' }],
-  };
-  assert.deepEqual(extractOsVersions(payload), ['3.2.7', '3.1.0']);
+// --- pure asset-name matching -------------------------------------------------
+
+test('versionFromAssetName matches assets for the exact device type slug', () => {
+  assert.equal(versionFromAssetName('raspberrypi4-64', 'balenaos-7.4.0+rev5-raspberrypi4-64.img.zip'), '7.4.0+rev5');
+  assert.equal(versionFromAssetName('raspberrypi5', 'balenaos-7.4.0+rev5-raspberrypi5.img.zip'), '7.4.0+rev5');
+  assert.equal(versionFromAssetName('fincm3', 'balenaos-2.9.1-fincm3.img.zip'), '2.9.1');
 });
 
-test('extractOsVersions tolerates unexpected payload shapes', () => {
-  assert.deepEqual(extractOsVersions(null), []);
-  assert.deepEqual(extractOsVersions({}), []);
-  assert.deepEqual(extractOsVersions({ d: 'nope' }), []);
+test('versionFromAssetName rejects non-matching machines and shapes', () => {
+  // Hyphenated slugs must not be mis-split onto a shorter machine suffix.
+  assert.equal(versionFromAssetName('raspberrypi4-64', 'balenaos-7.4.0+rev5-raspberrypi4-640.img.zip'), null);
+  assert.equal(versionFromAssetName('raspberrypi4-64', 'balenaos-7.4.0+rev5-raspberrypi5.img.zip'), null);
+  assert.equal(versionFromAssetName('raspberrypi4-64', 'balenaos-7.4.0+rev5-raspberrypi4-64.img.gz'), null);
+  assert.equal(versionFromAssetName('raspberrypi4-64', 'balenaos-7.4.0+rev5-raspberrypi4-64.img'), null);
+  assert.equal(versionFromAssetName('raspberrypi4-64', 'SHA256SUMS'), null);
 });
 
-test('releaseListFilter embeds the device type slug', () => {
-  const filter = releaseListFilter('raspberrypi4-64');
-  assert.match(filter, /is_final eq true/);
-  assert.match(filter, /semver_major gt 0/);
-  assert.match(filter, /dt\/slug eq 'raspberrypi4-64'/);
+// --- pure release normalization / pagination ----------------------------------
+
+test('toMirrorReleases keeps only well-formed releases and assets', () => {
+  const releases = toMirrorReleases([
+    githubRelease('v1', [githubAsset('a')]),
+    { tag_name: 42, assets: [] },
+    { assets: [githubAsset('b')] },
+    'nope',
+  ]);
+  assert.deepEqual(releases, [{ tagName: 'v1', assets: [{ name: 'a', url: 'https://mirror.test/a' }] }]);
+  assert.deepEqual(toMirrorReleases(null), []);
 });
 
-test('osVersionsUrl builds the documented release query', () => {
-  const url = new URL(osVersionsUrl('raspberrypi4-64'));
-  assert.equal(url.pathname, '/v7/release');
-  assert.equal(url.searchParams.get('$select'), 'raw_version');
-  assert.match(url.searchParams.get('$filter') ?? '', /belongs_to__application\/any\(bta:/);
-  assert.equal(url.searchParams.get('$orderby'), 'semver_major desc,semver_minor desc,semver_patch desc,revision desc');
+test('nextReleasesUrlFromLink extracts the rel=next target', () => {
+  const link =
+    '<https://api.github.com/repos/o/r/releases?per_page=100&page=2>; rel="next", ' +
+    '<https://api.github.com/repos/o/r/releases?per_page=100&page=3>; rel="last"';
+  assert.equal(nextReleasesUrlFromLink(link), 'https://api.github.com/repos/o/r/releases?per_page=100&page=2');
+  assert.equal(nextReleasesUrlFromLink('<https://x>; rel="last"'), null);
+  assert.equal(nextReleasesUrlFromLink(null), null);
 });
 
-test('listOsVersions returns deduplicated versions on success', async () => {
-  const originalFetch = globalThis.fetch;
-  let requestedUrl = '';
-  globalThis.fetch = fakeFetch((url) => {
-    requestedUrl = url;
-    return { status: 200, body: { d: [{ raw_version: '3.2.7' }, { raw_version: '3.2.6' }, { raw_version: '3.2.7' }] } };
+// --- pure version extraction ---------------------------------------------------
+
+/** The mirror as the GitHub API serves it (raw JSON shape). */
+const rawGithubReleases = [
+  githubRelease('v7.4.0+rev5', [
+    githubAsset('balenaos-7.4.0+rev5-raspberrypi4-64.img.zip'),
+    githubAsset('balenaos-7.4.0+rev5-raspberrypi5.img.zip'),
+    githubAsset('SHA256SUMS'),
+  ]),
+  githubRelease('v7.4.0+rev4', [githubAsset('balenaos-7.4.0+rev4-raspberrypi4-64.img.zip')]),
+  githubRelease('v7.5.0', [githubAsset('balenaos-7.5.0-raspberrypi4-64.img.zip')]),
+  githubRelease('v7.4.0+rev5-duplicate', [githubAsset('balenaos-7.4.0+rev5-raspberrypi4-64.img.zip')]),
+  githubRelease('v2.9.1', [githubAsset('balenaos-2.9.1-raspberrypi5.img.zip')]),
+];
+
+const sampleReleases: MirrorRelease[] = toMirrorReleases(rawGithubReleases);
+
+test('extractOsVersions deduplicates and orders semver-descending', () => {
+  assert.deepEqual(extractOsVersions(sampleReleases, 'raspberrypi4-64'), ['7.5.0', '7.4.0+rev5', '7.4.0+rev4']);
+  assert.deepEqual(extractOsVersions(sampleReleases, 'raspberrypi5'), ['7.4.0+rev5', '2.9.1']);
+});
+
+test('extractOsVersions returns an empty list for a device type the mirror does not serve', () => {
+  assert.deepEqual(extractOsVersions(sampleReleases, 'fincm3'), []);
+  assert.deepEqual(extractOsVersions([], 'raspberrypi4-64'), []);
+});
+
+// --- env configuration --------------------------------------------------------
+
+test('osImageSourceRepo defaults and validates the <owner>/<repo> shape', () => {
+  assert.equal(osImageSourceRepo(), DEFAULT_OS_IMAGE_SOURCE_REPO);
+
+  process.env.OS_IMAGE_SOURCE_REPO = 'another-owner/mirror.repo-2';
+  assert.equal(osImageSourceRepo(), 'another-owner/mirror.repo-2');
+
+  // An empty value counts as unset (the default applies).
+  for (const invalid of ['not-a-repo', 'a/b/c', 'owner/', '/repo', 'o wner/repo']) {
+    process.env.OS_IMAGE_SOURCE_REPO = invalid;
+    assert.throws(
+      () => osImageSourceRepo(),
+      (error: unknown) => {
+        assert.ok(error instanceof OsImageError);
+        assert.equal(error.statusCode, 500);
+        assert.match(error.message, /OS_IMAGE_SOURCE_REPO/);
+        return true;
+      },
+    );
+  }
+});
+
+test('githubReleasesUrl builds the documented anonymous listing URL', () => {
+  assert.equal(
+    githubReleasesUrl('volkermauel/balena-raspberrypi-abrp'),
+    'https://api.github.com/repos/volkermauel/balena-raspberrypi-abrp/releases?per_page=100',
+  );
+});
+
+// --- listing against the (mocked) GitHub API -----------------------------------
+
+test('listOsVersions serves mirror-sourced versions', async () => {
+  const { calls, restore } = mockFetch(() => ({ status: 200, body: rawGithubReleases }));
+  try {
+    assert.deepEqual(await listOsVersions('raspberrypi4-64'), ['7.5.0', '7.4.0+rev5', '7.4.0+rev4']);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases\?per_page=100$/);
+  } finally {
+    restore();
+  }
+});
+
+test('fetchMirrorReleases follows Link-header pagination', async () => {
+  const { calls, restore } = mockFetch((url) => {
+    if (url.endsWith('page=2')) {
+      return { status: 200, body: [githubRelease('v3.0.0', [githubAsset('balenaos-3.0.0-raspberrypi5.img.zip')])] };
+    }
+    return {
+      status: 200,
+      body: rawGithubReleases,
+      link: '<https://api.github.com/repos/o/r/releases?per_page=100&page=2>; rel="next"',
+    };
   });
 
   try {
-    const versions = await listOsVersions('raspberrypi4-64');
-    assert.deepEqual(versions, ['3.2.7', '3.2.6']);
-    assert.match(requestedUrl, /\/v7\/release\?/);
+    const releases = await fetchMirrorReleases();
+    assert.equal(calls.length, 2);
+    assert.ok(releases.some((release) => release.tagName === 'v3.0.0'));
+    assert.ok(releases.some((release) => release.tagName === 'v7.5.0'));
   } finally {
-    globalThis.fetch = originalFetch;
+    restore();
   }
 });
 
-test('listOsVersions maps upstream errors to a typed 502 error', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = fakeFetch(() => ({ status: 500 }));
-
+test('fetchMirrorReleases maps upstream errors to a typed 502 naming api.github.com', async () => {
+  const { restore } = mockFetch(() => ({ status: 500 }));
   try {
-    await assert.rejects(listOsVersions('raspberrypi4-64'), (error: unknown) => {
+    await assert.rejects(fetchMirrorReleases(), (error: unknown) => {
       assert.ok(error instanceof OsImageError);
       assert.equal(error.statusCode, 502);
-      assert.match(error.message, /raspberrypi4-64/);
+      assert.match(error.message, /api\.github\.com/);
       return true;
     });
   } finally {
-    globalThis.fetch = originalFetch;
+    restore();
   }
 });
 
-test('listOsVersions maps network failures to a typed 502 error', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = fakeFetch(() => ({ status: 0, throw: new Error('ECONNREFUSED') }));
-
+test('fetchMirrorReleases maps network failures to a typed 502', async () => {
+  const { restore } = mockFetch(() => ({ throw: new Error('ECONNREFUSED') }));
   try {
-    await assert.rejects(listOsVersions('raspberrypi4-64'), (error: unknown) => {
+    await assert.rejects(fetchMirrorReleases(), (error: unknown) => {
       assert.ok(error instanceof OsImageError);
       assert.equal(error.statusCode, 502);
       assert.match(error.message, /ECONNREFUSED/);
       return true;
     });
   } finally {
-    globalThis.fetch = originalFetch;
+    restore();
+  }
+});
+
+test('the releases listing is cached in-process for 5 minutes', async () => {
+  const { calls, restore } = mockFetch(() => ({ status: 200, body: rawGithubReleases }));
+  try {
+    await fetchMirrorReleases();
+    await fetchMirrorReleases();
+    await fetchMirrorReleases();
+    assert.equal(calls.length, 1, 'cached listing must not re-fetch');
+
+    const cached = peekMirrorCatalogCache();
+    assert.ok(cached);
+    cached.fetchedAt = Date.now() - MIRROR_CATALOG_CACHE_TTL_MS - 1;
+    await fetchMirrorReleases();
+    assert.equal(calls.length, 2, 'an expired listing must re-fetch');
+
+    assert.equal(MIRROR_CATALOG_CACHE_TTL_MS, 5 * 60 * 1000);
+  } finally {
+    restore();
+  }
+});
+
+// --- SHA256SUMS parsing and asset resolution -----------------------------------
+
+test('parseSha256Sums parses standard checksum lines', () => {
+  const sums = parseSha256Sums(
+    `${'a'.repeat(64)}  balenaos-7.4.0+rev5-raspberrypi4-64.img.zip\n` +
+      `${'b'.repeat(64)} *binary-marker.img.zip\r\n` +
+      'not-a-checksum-line\n',
+  );
+  assert.equal(sums.get('balenaos-7.4.0+rev5-raspberrypi4-64.img.zip'), 'a'.repeat(64));
+  assert.equal(sums.get('binary-marker.img.zip'), 'b'.repeat(64));
+  assert.equal(sums.size, 2);
+  assert.deepEqual([...parseSha256Sums('').keys()], []);
+});
+
+test('findMirrorAsset resolves the asset URL and its SHA256SUMS entry', async () => {
+  const { calls, restore } = mockFetch((url) => {
+    if (url === 'https://mirror.test/SHA256SUMS') {
+      return {
+        status: 200,
+        body: `${'a'.repeat(64)}  balenaos-7.4.0+rev5-raspberrypi4-64.img.zip\n`,
+        contentType: 'text/plain',
+      };
+    }
+    return { status: 200, body: rawGithubReleases };
+  });
+
+  try {
+    const asset = await findMirrorAsset('raspberrypi4-64', '7.4.0+rev5');
+    assert.deepEqual(asset, {
+      name: 'balenaos-7.4.0+rev5-raspberrypi4-64.img.zip',
+      url: 'https://mirror.test/balenaos-7.4.0+rev5-raspberrypi4-64.img.zip',
+      sha256: 'a'.repeat(64),
+    });
+    assert.equal(calls.length, 2, 'listing + sums fetch');
+  } finally {
+    restore();
+  }
+});
+
+test('findMirrorAsset returns sha256 undefined when the release has no SHA256SUMS entry', async () => {
+  const { restore } = mockFetch(() => ({
+    status: 200,
+    body: [githubRelease('v7.4.0+rev4', [githubAsset('balenaos-7.4.0+rev4-raspberrypi4-64.img.zip')])],
+  }));
+  try {
+    const asset = await findMirrorAsset('raspberrypi4-64', '7.4.0+rev4');
+    assert.equal(asset.sha256, undefined);
+    assert.equal(asset.url, 'https://mirror.test/balenaos-7.4.0+rev4-raspberrypi4-64.img.zip');
+  } finally {
+    restore();
+  }
+});
+
+test('findMirrorAsset fails with a typed 404 naming device type, version and mirror', async () => {
+  const { restore } = mockFetch(() => ({ status: 200, body: rawGithubReleases }));
+  try {
+    await assert.rejects(findMirrorAsset('fincm3', '1.0.0'), (error: unknown) => {
+      assert.ok(error instanceof OsImageError);
+      assert.equal(error.statusCode, 404);
+      assert.match(error.message, /fincm3/);
+      assert.match(error.message, /1\.0\.0/);
+      assert.ok(error.message.includes(DEFAULT_OS_IMAGE_SOURCE_REPO));
+      return true;
+    });
+  } finally {
+    restore();
   }
 });

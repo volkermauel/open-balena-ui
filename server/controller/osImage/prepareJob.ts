@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
@@ -9,8 +9,9 @@ import zlib from 'node:zlib';
 import archiver from 'archiver';
 import * as configJson from 'balena-config-json';
 import { OsImageError } from './errors';
-import { generateFleetConfig } from './config';
-import { balenaCloudApiUrl } from './versions';
+import { generateFleetConfig, applyGatewaySshKeys, parseGatewaySshPublicKeys } from './config';
+import { findMirrorAsset } from './versions';
+import { extractZipEntry, pickImageEntry, readZipEntries } from './zip';
 import {
   osImageCacheStore,
   type CacheStore,
@@ -57,7 +58,7 @@ export interface OsImageJob {
   artifact?: OsImageJobArtifact;
 }
 
-interface OsImageJobEntry extends OsImageJob {
+export interface OsImageJobEntry extends OsImageJob {
   request: PrepareOsImageRequest;
   authorization?: string;
   artifactPath?: string;
@@ -97,13 +98,12 @@ export const toFleetConfigOptions = (request: PrepareOsImageRequest): FleetConfi
   version: request.version,
   network: request.network,
   ...(request.appUpdatePollInterval !== undefined ? { appUpdatePollInterval: request.appUpdatePollInterval } : {}),
-  ...(request.variant === 'development' ? { developmentMode: true } : {}),
   ...(request.wifiSsid !== undefined ? { wifiSsid: request.wifiSsid } : {}),
   ...(request.wifiKey !== undefined ? { wifiKey: request.wifiKey } : {}),
 });
 
 /**
- * Browser-facing download filename: `<deviceType>-<version>[-dev]-<sanitized fleetName>.<zip|gz>`.
+ * Browser-facing download filename: `<deviceType>-<version>-<sanitized fleetName>.<zip|gz>`.
  * Every part is sanitized so the value is safe to embed in Content-Disposition.
  */
 const sanitizeFilenamePart = (value: string, fallback: string): string =>
@@ -116,8 +116,7 @@ export const artifactDownloadFilename = (request: PrepareOsImageRequest): string
   const deviceType = sanitizeFilenamePart(request.deviceType, 'device');
   const version = sanitizeFilenamePart(request.version, 'os');
   const fleetSlug = sanitizeFilenamePart(request.fleetName, 'fleet');
-  const variantSuffix = request.variant === 'development' ? '-dev' : '';
-  return `${deviceType}-${version}${variantSuffix}-${fleetSlug}.${request.format}`;
+  return `${deviceType}-${version}-${fleetSlug}.${request.format}`;
 };
 
 const fileExists = async (filePath: string): Promise<boolean> => {
@@ -139,48 +138,42 @@ const silentlyRemove = async (filePath: string | undefined): Promise<void> => {
   }
 };
 
-const osImageDownloadUrl = (request: PrepareOsImageRequest): string => {
-  const params = new URLSearchParams({
-    deviceType: request.deviceType,
-    version: request.version,
-    fileType: '.img',
-  });
-  if (request.variant === 'development') {
-    params.set('developmentMode', 'true');
-  }
-  return `${balenaCloudApiUrl()}/download?${params.toString()}`;
-};
-
 /**
- * Stream the pristine OS image from balenaCloud into `tmp/`, reporting byte progress, then
- * atomically commit it into the `img/` tier. Called under the pristine cache key's lock.
+ * Stream the mirror release asset for (deviceType, version) into `tmp/`, hashing the
+ * bytes as they arrive, and atomically commit the sha256-verified archive into the
+ * `img/` tier. Called under the pristine cache key's lock. Fails closed — with the
+ * partial bytes deleted — when the release has no SHA256SUMS entry or the hash
+ * mismatches.
  */
-const downloadPristineImage = async (job: OsImageJobEntry, destination: string): Promise<void> => {
+export const downloadPristineMirrorImage = async (job: OsImageJobEntry, destination: string): Promise<void> => {
   const { request } = job;
+
+  const asset = await findMirrorAsset(request.deviceType, request.version);
+  if (asset.sha256 === undefined) {
+    throw new OsImageError(
+      502,
+      `The mirror release for device type '${request.deviceType}' version '${request.version}' has no ` +
+        `SHA256SUMS entry for '${asset.name}' — refusing to use an unverified image`,
+    );
+  }
 
   let response: Response;
   try {
-    response = await fetch(osImageDownloadUrl(request));
+    response = await fetch(asset.url);
   } catch (error) {
     throw new OsImageError(
       502,
-      `Failed to reach balenaCloud for the OS image of device type '${request.deviceType}': ${
+      `Failed to reach the mirror for the OS image of device type '${request.deviceType}': ${
         error instanceof Error ? error.message : 'unknown network error'
       }`,
     );
   }
 
-  if (response.status === 404) {
-    throw new OsImageError(
-      404,
-      `No ${request.variant} balenaOS image found for device type '${request.deviceType}' version '${request.version}'`,
-    );
-  }
   if (!response.ok) {
-    throw new OsImageError(502, `balenaCloud image download failed with status ${response.status}`);
+    throw new OsImageError(502, `Mirror asset download failed with status ${response.status}`);
   }
   if (!response.body) {
-    throw new OsImageError(502, 'balenaCloud image download returned an empty body');
+    throw new OsImageError(502, 'Mirror asset download returned an empty body');
   }
 
   const contentLength = Number(response.headers.get('content-length'));
@@ -188,9 +181,11 @@ const downloadPristineImage = async (job: OsImageJobEntry, destination: string):
   job.progress = { downloadedBytes: 0, ...(totalBytes !== undefined ? { totalBytes } : {}) };
 
   let downloadedBytes = 0;
-  const progressCounter = new Transform({
+  const hash = createHash('sha256');
+  const progressAndHash = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       downloadedBytes += chunk.length;
+      hash.update(chunk);
       job.progress = { downloadedBytes, ...(totalBytes !== undefined ? { totalBytes } : {}) };
       callback(null, chunk);
     },
@@ -200,9 +195,18 @@ const downloadPristineImage = async (job: OsImageJobEntry, destination: string):
   try {
     await streamPipeline(
       Readable.fromWeb(response.body as unknown as NodeWebReadableStream<Uint8Array>),
-      progressCounter,
+      progressAndHash,
       createWriteStream(tmpFile),
     );
+
+    const actualSha256 = hash.digest('hex');
+    if (actualSha256 !== asset.sha256) {
+      throw new OsImageError(
+        502,
+        `sha256 mismatch for mirror asset '${asset.name}' (expected ${asset.sha256}, got ${actualSha256}) — the download was discarded`,
+      );
+    }
+
     await fsp.rename(tmpFile, destination);
   } catch (error) {
     await silentlyRemove(tmpFile);
@@ -285,7 +289,7 @@ const runOsImageJob = async (job: OsImageJobEntry, cacheStore: CacheStore): Prom
       return;
     }
 
-    // Phase 1: ensure the pristine image exists (downloaded at most once per cache key).
+    // Phase 1: ensure the pristine mirror archive exists (downloaded at most once per cache key).
     job.phase = 'downloading';
     if (await fileExists(pristinePath)) {
       await cacheStore.touch(pristinePath);
@@ -295,20 +299,24 @@ const runOsImageJob = async (job: OsImageJobEntry, cacheStore: CacheStore): Prom
         if (await fileExists(pristinePath)) {
           return;
         }
-        await downloadPristineImage(job, pristinePath);
+        await downloadPristineMirrorImage(job, pristinePath);
       });
       await cacheStore.register(pristinePath);
     }
 
-    // Phase 2: generate the fleet config with the caller's JWT and inject it into a copy.
+    // Phase 2: generate the fleet config with the caller's JWT, unpack the verified
+    // archive into a working image, and inject the config into it.
     job.phase = 'injecting';
     job.progress = undefined;
-    const config = await generateFleetConfig(job.authorization, configOptions);
+    const config = applyGatewaySshKeys(
+      await generateFleetConfig(job.authorization, configOptions),
+      parseGatewaySshPublicKeys(process.env.GATEWAY_SSH_PUBLIC_KEYS),
+    );
     // The forwarded credentials and wifi secrets are no longer needed once the config exists.
     job.authorization = undefined;
     job.request.wifiSsid = undefined;
     job.request.wifiKey = undefined;
-    await fsp.copyFile(pristinePath, workingImage);
+    await extractZipEntry(pristinePath, pickImageEntry(await readZipEntries(pristinePath)), workingImage);
     await configJson.write(workingImage, undefined, config);
 
     // Phase 3: compress and commit the artifact.

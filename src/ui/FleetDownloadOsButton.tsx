@@ -2,6 +2,7 @@ import DownloadIcon from '@mui/icons-material/Download';
 import { Button, ButtonProps } from '@mui/material';
 import React, { useState } from 'react';
 import { useRecordContext } from 'react-admin';
+import type { ResourceRecord } from '../types/resource';
 import OsDownloadDialog from './OsDownloadDialog';
 
 interface FleetDownloadOsButtonProps {
@@ -17,7 +18,7 @@ interface FleetDownloadOsButtonProps {
  */
 export const FleetDownloadOsButton: React.FC<FleetDownloadOsButtonProps> = ({ variant, size, sx, children }) => {
   const [open, setOpen] = useState(false);
-  const record = useRecordContext<Record<string, unknown>>();
+  const record = useRecordContext<ResourceRecord>();
 
   return (
     <>
@@ -34,6 +35,7 @@ export const FleetDownloadOsButton: React.FC<FleetDownloadOsButtonProps> = ({ va
           open={open}
           onClose={() => setOpen(false)}
           initialFleetId={record.id as string | number}
+          initialFleetRecord={record}
           initialDeviceTypeId={record['is for-device type'] as string | number}
         />
       )}

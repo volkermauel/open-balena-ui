@@ -4,18 +4,9 @@ import authorize from '../middleware/authorize';
 import dosProtect from '../middleware/dosProtect';
 import { OsImageError, listOsVersions, osImageCacheStore } from '../controller/osImage';
 import { isValidDeviceTypeSlug, isValidOsVersion } from '../controller/osImage/cacheStore';
-import {
-  createOsImageJob,
-  getOsImageJob,
-  getOsImageJobArtifactPath,
-  type PrepareOsImageRequest,
-} from '../controller/osImage/prepareJob';
-import type {
-  OsImageFormat,
-  OsImageNetwork,
-  OsImageVariant,
-  CachedVersionInfo,
-} from '../controller/osImage/cacheStore';
+import { createOsImageJob, getOsImageJob, getOsImageJobArtifactPath } from '../controller/osImage/prepareJob';
+import type { OsImageFormat, CachedVersionInfo } from '../controller/osImage/cacheStore';
+import { parsePrepareOsImageRequest } from '../controller/osImage/request';
 
 interface ErrorResponse {
   success: false;
@@ -43,22 +34,6 @@ interface OsJobResponse {
   artifact?: { filename: string; sizeBytes: number; format: OsImageFormat };
 }
 
-interface PrepareOsImageRequestBody {
-  deviceType?: unknown;
-  version?: unknown;
-  variant?: unknown;
-  format?: unknown;
-  appId?: unknown;
-  fleetName?: unknown;
-  network?: unknown;
-  appUpdatePollInterval?: unknown;
-  wifiSsid?: unknown;
-  wifiKey?: unknown;
-}
-
-const VARIANTS: OsImageVariant[] = ['production', 'development'];
-const FORMATS: OsImageFormat[] = ['zip', 'gz'];
-const NETWORKS: OsImageNetwork[] = ['ethernet', 'wifi'];
 const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const sendOsImageError = (
@@ -126,81 +101,18 @@ router.get<Record<string, never>, OsCacheStatusResponse | ErrorResponse>(
   },
 );
 
-router.post<Record<string, never>, PrepareOsImageSuccessResponse | ErrorResponse, PrepareOsImageRequestBody>(
+router.post<Record<string, never>, PrepareOsImageSuccessResponse | ErrorResponse>(
   '/prepare',
   ...dosProtect,
   authorize,
   (req, res) => {
-    const body = req.body ?? {};
-
-    const deviceType = typeof body.deviceType === 'string' ? body.deviceType.trim() : '';
-    const version = typeof body.version === 'string' ? body.version.trim() : '';
-    const fleetName = typeof body.fleetName === 'string' ? body.fleetName.trim() : '';
-    const variant = typeof body.variant === 'string' ? body.variant : '';
-    const format = typeof body.format === 'string' ? body.format : '';
-    const network = typeof body.network === 'string' ? body.network : '';
-    const appId = Number(body.appId);
-    const appUpdatePollInterval =
-      body.appUpdatePollInterval === undefined || body.appUpdatePollInterval === null
-        ? undefined
-        : Number(body.appUpdatePollInterval);
-    const wifiSsid = typeof body.wifiSsid === 'string' && body.wifiSsid.length > 0 ? body.wifiSsid : undefined;
-    const wifiKey = typeof body.wifiKey === 'string' && body.wifiKey.length > 0 ? body.wifiKey : undefined;
-
-    if (!deviceType || !version || !fleetName) {
-      res
-        .status(406)
-        .json({ success: false, message: 'Request is lacking deviceType, version or fleetName in body context' });
-      return;
+    try {
+      const request = parsePrepareOsImageRequest(req.body);
+      const job = createOsImageJob(request, req.headers.authorization);
+      res.status(200).json({ jobId: job.jobId });
+    } catch (error) {
+      sendOsImageError(res, error);
     }
-    if (!isValidDeviceTypeSlug(deviceType)) {
-      res.status(406).json({ success: false, message: 'Request has an invalid deviceType in body context' });
-      return;
-    }
-    if (!isValidOsVersion(version)) {
-      res.status(406).json({ success: false, message: 'Request has an invalid version in body context' });
-      return;
-    }
-    if (!VARIANTS.includes(variant as OsImageVariant)) {
-      res.status(406).json({ success: false, message: 'Request has an invalid variant in body context' });
-      return;
-    }
-    if (!FORMATS.includes(format as OsImageFormat)) {
-      res.status(406).json({ success: false, message: 'Request has an invalid format in body context' });
-      return;
-    }
-    if (!NETWORKS.includes(network as OsImageNetwork)) {
-      res.status(406).json({ success: false, message: 'Request has an invalid network in body context' });
-      return;
-    }
-    if (!Number.isInteger(appId) || appId <= 0) {
-      res.status(406).json({ success: false, message: 'Request is lacking a valid appId in body context' });
-      return;
-    }
-    if (appUpdatePollInterval !== undefined && (!Number.isFinite(appUpdatePollInterval) || appUpdatePollInterval < 1)) {
-      res.status(406).json({ success: false, message: 'Request has an invalid appUpdatePollInterval in body context' });
-      return;
-    }
-    if (network === 'wifi' && !wifiSsid) {
-      res.status(406).json({ success: false, message: 'Request is lacking wifiSsid in body context' });
-      return;
-    }
-
-    const request: PrepareOsImageRequest = {
-      deviceType,
-      version,
-      variant: variant as OsImageVariant,
-      format: format as OsImageFormat,
-      appId,
-      fleetName,
-      network: network as OsImageNetwork,
-      ...(appUpdatePollInterval !== undefined ? { appUpdatePollInterval } : {}),
-      ...(wifiSsid !== undefined ? { wifiSsid } : {}),
-      ...(wifiKey !== undefined ? { wifiKey } : {}),
-    };
-
-    const job = createOsImageJob(request, req.headers.authorization);
-    res.status(200).json({ jobId: job.jobId });
   },
 );
 
