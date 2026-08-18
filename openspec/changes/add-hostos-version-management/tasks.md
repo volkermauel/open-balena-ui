@@ -2,8 +2,8 @@
 
 ## Server implementation
 
-- [ ] Generalize `registryMirror.ts`: source host + auth mode params (anonymous token / balenaCloud bearer);
-      supervisor call sites unchanged (typecheck + existing 28 tests stay green)
+- [ ] Generalize `registryMirror.ts`: source host + auth mode params (anonymous token / balenaCloud bearer); supervisor
+      call sites unchanged (typecheck + existing 28 tests stay green)
 - [ ] `hostosCatalog.ts`: ghcr anonymous token, `tags/list` fetch, tag→semver/raw parsing (pure, unit tested),
       machine-from-slug
 - [ ] `hostosSeed.ts`: idempotent import (image row → mirror+verify → release on hostapp app → release_image),

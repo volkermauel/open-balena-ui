@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { RegistryMirrorError } from '../../server/controller/supervisorRelease/errors';
 import { parseSemverFields, commitForCloudRelease } from '../../server/controller/supervisorRelease/instance';
 import {
+  DEFAULT_SUPERVISOR_SOURCE_REGISTRY,
   deriveRegistryHost,
   inspectManifest,
+  parseSupervisorSourceRegistry,
+  supervisorSourceRepo,
+  supervisorSourceRegistry,
+  supervisorTargetRepo,
   withRepoLock,
 } from '../../server/controller/supervisorRelease/registryMirror';
 
@@ -140,4 +146,85 @@ test('withRepoLock serializes work per repository', async () => {
   await Promise.all([first, second, other]);
 
   assert.deepEqual(order, ['first-start', 'other-start', 'first-end', 'second-start', 'second-end']);
+});
+
+test('SUPERVISOR_SOURCE_REGISTRY parses host + optional owner like the hostOS contract', () => {
+  assert.deepEqual(parseSupervisorSourceRegistry('ghcr.io/volkermauel'), {
+    host: 'ghcr.io',
+    url: 'https://ghcr.io',
+    owner: 'volkermauel',
+  });
+  // Scheme prefix and trailing slash are ignored; an explicit http:// is preserved.
+  assert.deepEqual(parseSupervisorSourceRegistry('https://ghcr.io/volkermauel/'), {
+    host: 'ghcr.io',
+    url: 'https://ghcr.io',
+    owner: 'volkermauel',
+  });
+  assert.deepEqual(parseSupervisorSourceRegistry('http://registry.local:5000/supervisor'), {
+    host: 'registry.local:5000',
+    url: 'http://registry.local:5000',
+    owner: 'supervisor',
+  });
+  // No owner: repositories live at the registry root.
+  assert.deepEqual(parseSupervisorSourceRegistry('registry.example.com'), {
+    host: 'registry.example.com',
+    url: 'https://registry.example.com',
+    owner: '',
+  });
+});
+
+test('invalid SUPERVISOR_SOURCE_REGISTRY values are a clear configuration error', () => {
+  assert.throws(() => parseSupervisorSourceRegistry('ghcr'), /SUPERVISOR_SOURCE_REGISTRY/); // no dot in host
+  assert.throws(() => parseSupervisorSourceRegistry(''), /SUPERVISOR_SOURCE_REGISTRY/);
+  assert.throws(() => parseSupervisorSourceRegistry('Ghcr.io/owner'), /SUPERVISOR_SOURCE_REGISTRY/); // uppercase host
+  assert.throws(() => parseSupervisorSourceRegistry('ghcr.io/Owner'), /SUPERVISOR_SOURCE_REGISTRY/); // uppercase owner
+  assert.throws(() => parseSupervisorSourceRegistry('ghcr.io//owner'), /SUPERVISOR_SOURCE_REGISTRY/); // empty segment
+  assert.throws(() => parseSupervisorSourceRegistry('ghcr.io/owner/extra'), /SUPERVISOR_SOURCE_REGISTRY/); // too many
+});
+
+test('supervisorSourceRegistry defaults to the ghcr mirror, env-overridable, always anonymous', () => {
+  const previous = process.env.SUPERVISOR_SOURCE_REGISTRY;
+  try {
+    delete process.env.SUPERVISOR_SOURCE_REGISTRY;
+    assert.deepEqual(supervisorSourceRegistry(), { url: 'https://ghcr.io', auth: 'anonymous' });
+
+    process.env.SUPERVISOR_SOURCE_REGISTRY = 'registry.example.com/mirror';
+    assert.deepEqual(supervisorSourceRegistry(), { url: 'https://registry.example.com', auth: 'anonymous' });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.SUPERVISOR_SOURCE_REGISTRY;
+    } else {
+      process.env.SUPERVISOR_SOURCE_REGISTRY = previous;
+    }
+  }
+  assert.equal(DEFAULT_SUPERVISOR_SOURCE_REGISTRY, 'ghcr.io/volkermauel');
+});
+
+test('supervisorSourceRepo maps arches to owner-prefixed mirror repositories', () => {
+  const previous = process.env.SUPERVISOR_SOURCE_REGISTRY;
+  try {
+    delete process.env.SUPERVISOR_SOURCE_REGISTRY;
+    assert.equal(supervisorSourceRepo('aarch64'), 'volkermauel/aarch64-supervisor');
+
+    process.env.SUPERVISOR_SOURCE_REGISTRY = 'ghcr.io/other-owner';
+    assert.equal(supervisorSourceRepo('amd64'), 'other-owner/amd64-supervisor');
+
+    process.env.SUPERVISOR_SOURCE_REGISTRY = 'registry.example.com';
+    assert.equal(supervisorSourceRepo('armv7hf'), 'armv7hf-supervisor');
+
+    // An arch that would form an invalid repository path is rejected.
+    delete process.env.SUPERVISOR_SOURCE_REGISTRY;
+    assert.throws(() => supervisorSourceRepo('BAD_ARCH!'), RegistryMirrorError);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.SUPERVISOR_SOURCE_REGISTRY;
+    } else {
+      process.env.SUPERVISOR_SOURCE_REGISTRY = previous;
+    }
+  }
+});
+
+test('supervisorTargetRepo is the owner-independent per-arch path', () => {
+  assert.equal(supervisorTargetRepo('aarch64'), 'aarch64-supervisor');
+  assert.throws(() => supervisorTargetRepo('BAD_ARCH!'), RegistryMirrorError);
 });

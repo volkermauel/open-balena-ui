@@ -17,7 +17,6 @@ export interface SupervisorVersionsResponse {
   deviceType: string;
   arch: string;
   versions: SupervisorVersionEntry[];
-  mirroringEnabled: boolean;
 }
 
 export interface SupervisorStatusResponse {

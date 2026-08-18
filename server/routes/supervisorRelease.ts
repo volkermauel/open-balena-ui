@@ -4,7 +4,6 @@ import dosProtect from '../middleware/dosProtect';
 import { CatalogVersion, supervisorAppSlug } from '../controller/supervisorRelease/cloud';
 import {
   InstanceApiError,
-  MirroringNotConfiguredError,
   NotFoundError,
   RegistryMirrorError,
   UpstreamError,
@@ -75,10 +74,6 @@ router.use(json());
 const callerAuth = (req: Request): InstanceAuth => ({ authorization: req.headers.authorization ?? '' });
 
 const sendError = (res: Response, error: unknown): void => {
-  if (error instanceof MirroringNotConfiguredError) {
-    res.status(503).json({ success: false, message: error.message });
-    return;
-  }
   if (error instanceof UpstreamError) {
     res.status(502).json({ success: false, message: error.message });
     return;
@@ -153,7 +148,6 @@ router.get<Record<string, never>, VersionsSuccessResponse | ErrorResponse>(
       deviceType: typeInfo.slug,
       arch: typeInfo.arch,
       versions: entries,
-      mirroringEnabled: Boolean(process.env.BALENACLOUD_TOKEN),
     });
   }),
 );

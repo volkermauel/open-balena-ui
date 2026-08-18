@@ -59,16 +59,19 @@ survive a server restart; already prepared artifacts remain available on disk.
 
 ### Supervisor updates
 
-Two additional server-side variables configure the supervisor version management feature:
+Server-side variables configuring the supervisor version management feature:
 
-- `BALENACLOUD_TOKEN` A balenaCloud JWT (any account, e.g. a free one) used to pull supervisor images from
-  `registry2.balena-cloud.com` when mirroring them into your instance registry. **Optional**: without it, version
-  listing still works, but seeding/updating to a version that is not yet mirrored fails with a clear notice in the ui.
+- `SUPERVISOR_SOURCE_REGISTRY` The ghcr-style mirror the supervisor images are sourced from, as
+  `<registry-host>[/owner]` (an optional `https?://` scheme prefix and trailing slash are ignored; the host must be
+  lowercase and contain a dot, an explicit `http://` is preserved). **Optional**, defaults to `ghcr.io/volkermauel`; the
+  per-arch repositories (`<owner>/<arch>-supervisor`) are pulled anonymously — no credential is required or sent, and
+  the listed versions are exactly the tags the mirror serves.
 - `OPEN_BALENA_REGISTRY_URL` The base URL of your instance registry, e.g. `https://registry2.openbalena.local`.
   **Optional**: defaults to deriving the registry host from `REACT_APP_OPEN_BALENA_API_URL` by replacing the leftmost
   host label with `registry2` (`api.openbalena.local` → `registry2.openbalena.local`).
-- `BALENACLOUD_API_URL` Base URL of the balenaCloud API used for the public supervisor catalog. **Optional**, defaults
-  to `https://api.balena-cloud.com`.
+- `BALENACLOUD_API_URL` Base URL of the balenaCloud API used for optional public-catalog metadata enrichment (variant,
+  cloud release id) of the listed mirror versions. **Optional**, defaults to `https://api.balena-cloud.com`; when
+  unreachable, versions still list with default metadata.
 
 ### HostOS version import
 
@@ -88,18 +91,18 @@ openBalena ships without any supervisor releases, so devices keep the supervisor
 image. This ui adds a one-click supervisor update:
 
 - The **device dashboard** shows the current and any pending target supervisor version and offers an "Update Supervisor"
-  dialog listing the available versions for the device's CPU architecture (sourced from balenaCloud's public supervisor
-  catalog, deduplicated and ordered newest-first). Versions older than the device's current one are listed but disabled
-  — open-balena-api rejects supervisor downgrades.
+  dialog listing the available versions for the device's CPU architecture (the tags served by the configured supervisor
+  mirror, deduplicated and ordered newest-first, enriched with balenaCloud public-catalog metadata when available).
+  Versions older than the device's current one are listed but disabled — open-balena-api rejects supervisor downgrades.
 - The **device list** offers a bulk action for the selected devices (they must share one device type), and the **fleet
   edit page** can update every device of a fleet (grouped by device type).
 
 On first use of a version, the ui server seeds it into your instance: it creates the public
 `balena_os/<arch>-supervisor` application, services and image metadata with your own user credentials, copies the image
-bytes byte-identically (by manifest digest, config and layers included) from balenaCloud's registry into your instance
-registry, and only then creates the `success` release. Afterwards it sets each device's target supervisor release
-(`should be managed by-release`) with your credentials; the instance API enforces the no-downgrade rule per device and
-the ui reports per-device results.
+bytes byte-identically (by manifest digest, config and layers included) from the configured supervisor mirror into your
+instance registry — anonymous pulls, no upstream credential — and only then creates the `success` release. Afterwards it
+sets each device's target supervisor release (`should be managed by-release`) with your credentials; the instance API
+enforces the no-downgrade rule per device and the ui reports per-device results.
 
 All `/supervisor-releases/*` endpoints of the ui server require a valid ui JWT; instance writes always run with the
 calling user's token. Validate on a real device before rolling a whole fleet.

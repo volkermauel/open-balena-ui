@@ -1,8 +1,12 @@
 import * as balenaSemver from 'balena-semver';
-import { UpstreamError } from './errors';
+import { errorMessage, UpstreamError } from './errors';
+import { getSourceToken, SourceRegistryConfig, supervisorSourceRegistry, supervisorSourceRepo } from './registryMirror';
+import { isSemverVersion } from './semver';
 
 /**
- * Anonymous read-only client for balenaCloud's public supervisor catalog.
+ * Supervisor version catalog: mirror tags from the configured ghcr-style
+ * source registry (`SUPERVISOR_SOURCE_REGISTRY`), pulled anonymously, with
+ * balenaCloud's public supervisor catalog as best-effort metadata enrichment.
  *
  * OData encoding note (verified against api.balena-cloud.com): spaces in the
  * query string are encoded as `%20` exactly once; single quotes, slashes and
@@ -35,18 +39,21 @@ export interface CloudRelease {
   composition: unknown;
 }
 
+/** The release's single image as far as catalog consumers need it. */
 export interface CloudReleaseImage {
-  location: string;
-  contentHash: string;
   serviceName: string;
 }
 
-/** A release after dedupe/ordering, ready for the version listing. */
+/** A listed version after mirror-tag ordering and cloud enrichment. */
 export interface CatalogVersion {
   semver: string;
   rawVersion: string;
+  /** Raw mirror tag this entry was listed from ('' for cloud-only entries). */
+  mirrorTag: string;
   cloudReleaseId: number;
   variant: string;
+  /** Service name of the release's single image ('supervisor' when unknown). */
+  serviceName: string;
 }
 
 interface ODataResponse<T> {
@@ -134,11 +141,7 @@ export const fetchReleaseImages = async (releaseId: number): Promise<CloudReleas
         service && !Array.isArray(service) ? (service.service_name ?? '') : (service?.service_name ?? '');
 
       if (image.is_stored_at__image_location && image.content_hash) {
-        images.push({
-          location: image.is_stored_at__image_location,
-          contentHash: image.content_hash,
-          serviceName,
-        });
+        images.push({ serviceName });
       }
     }
   }
@@ -167,13 +170,156 @@ export const dedupeAndOrderReleases = (releases: CloudRelease[]): CatalogVersion
       bySemver.set(release.semver, {
         semver: release.semver,
         rawVersion: release.raw_version,
+        mirrorTag: '',
         cloudReleaseId: release.id,
         variant: release.variant ?? '',
+        serviceName: 'supervisor',
       });
     }
   }
 
   return [...bySemver.values()].sort((a, b) => balenaSemver.rcompare(a.semver, b.semver));
+};
+
+/**
+ * Tag shape accepted as a supervisor version: an optional `v` prefix on a
+ * semver body (design.md). The anchored shape alone is not enough — it
+ * admits e.g. `19.0.8.1` — so every candidate is additionally checked with
+ * the exact parser `parseSemverFields` uses at seed time: a tag is listed
+ * only if seeding could parse its semver.
+ */
+const SUPERVISOR_TAG_PATTERN = /^v?\d+\.\d+\.\d+([-.+].*)?$/;
+
+/**
+ * Turn the mirror's raw tag list into catalog versions: keep tags whose
+ * semver the seed-time parser accepts, strip a leading `v` for the semver
+ * value (the raw tag is kept on the entry), dedupe by semver preferring the
+ * `v`-prefixed raw tag, and order the result semver-descending using
+ * balena-semver. Pure — unit tested.
+ */
+export const mirrorTagsToVersions = (tags: string[]): CatalogVersion[] => {
+  const bySemver = new Map<string, CatalogVersion>();
+  for (const tag of tags) {
+    const semver = tag.replace(/^v/, '');
+    if (!SUPERVISOR_TAG_PATTERN.test(tag) || !isSemverVersion(semver)) {
+      continue;
+    }
+    const existing = bySemver.get(semver);
+    // Prefer the `v`-prefixed raw tag when both spellings exist.
+    if (!existing || (!existing.mirrorTag.startsWith('v') && tag.startsWith('v'))) {
+      bySemver.set(semver, {
+        semver,
+        rawVersion: tag,
+        mirrorTag: tag,
+        cloudReleaseId: 0,
+        variant: '',
+        serviceName: 'supervisor',
+      });
+    }
+  }
+
+  return [...bySemver.values()].sort((a, b) => balenaSemver.rcompare(a.semver, b.semver));
+};
+
+/**
+ * Fetch the mirror repository's tags (anonymous pull token, `tags/list`).
+ * A missing or private/nonexistent repository is an empty arch, not an
+ * error: ghcr issues anonymous tokens regardless and answers `tags/list`
+ * with 404, and registries that refuse the anonymous token or the tag list
+ * itself (401/403) get the same treatment. A real outage answers 5xx or
+ * fails at the network level, which still raises an upstream error.
+ */
+const fetchMirrorTags = async (source: SourceRegistryConfig, repo: string): Promise<string[]> => {
+  let token: string;
+  try {
+    token = await getSourceToken(source, repo);
+  } catch (error) {
+    if (error instanceof UpstreamError && (error.status === 401 || error.status === 403)) {
+      return [];
+    }
+    throw error;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${source.url}/v2/${repo}/tags/list?n=1000`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (error) {
+    throw new UpstreamError(
+      `Supervisor source tags request failed: cannot reach ${source.url}/${repo} (${errorMessage(error)})`,
+    );
+  }
+  if (res.status === 404 || res.status === 401 || res.status === 403) {
+    return []; // missing, private or unreadable repository — a legitimately empty arch
+  }
+  if (!res.ok) {
+    throw new UpstreamError(
+      `Supervisor source tags request failed (${res.status}) for ${source.url}/${repo}`,
+      res.status,
+    );
+  }
+  // ghcr signals further pages via a Link header; anything beyond the first
+  // page would be silently truncated, so surface it instead of hiding it.
+  const link = res.headers.get('link');
+  if (link?.includes('rel="next"')) {
+    console.warn(`Supervisor source tag list for ${repo} is paginated; showing the first 1000 tags only`);
+  }
+
+  const body = (await res.json().catch(() => null)) as { tags?: unknown } | null;
+  if (!body || !Array.isArray(body.tags)) {
+    throw new UpstreamError(`Supervisor source returned no tag list for ${repo}`);
+  }
+  return body.tags.filter((tag): tag is string => typeof tag === 'string');
+};
+
+/**
+ * Supervisor versions for a CPU arch: the mirror repository's tags, ordered
+ * newest-first and enriched with balenaCloud public-catalog metadata (variant,
+ * cloud release id) on a best-effort basis — enrichment failure never fails
+ * the listing; versions unknown to balenaCloud list with defaults.
+ */
+export const listMirrorVersions = async (arch: string): Promise<CatalogVersion[]> => {
+  const source = supervisorSourceRegistry();
+  const repo = supervisorSourceRepo(arch);
+  const versions = mirrorTagsToVersions(await fetchMirrorTags(source, repo));
+  if (versions.length === 0) {
+    return []; // empty arch — not worth a pair of enrichment round-trips
+  }
+
+  let cloudBySemver = new Map<string, CatalogVersion>();
+  try {
+    const application = await fetchSupervisorApplication(arch);
+    if (application) {
+      cloudBySemver = new Map(
+        dedupeAndOrderReleases(await fetchSupervisorReleases(application.id)).map((entry) => [entry.semver, entry]),
+      );
+    }
+  } catch {
+    // Enrichment is best-effort: list the mirror tags with default metadata.
+  }
+
+  return versions.map((version) => {
+    const cloud = cloudBySemver.get(version.semver);
+    return cloud ? { ...version, variant: cloud.variant, cloudReleaseId: cloud.cloudReleaseId } : version;
+  });
+};
+
+/**
+ * Service name of a catalog version's single image from the balenaCloud
+ * catalog; 'supervisor' when the version is unknown there or the catalog is
+ * unreachable. Best-effort — never throws.
+ */
+export const serviceNameForVersion = async (catalog: CatalogVersion): Promise<string> => {
+  if (!catalog.cloudReleaseId) {
+    return 'supervisor';
+  }
+  try {
+    const images = await fetchReleaseImages(catalog.cloudReleaseId);
+    return images[0]?.serviceName || 'supervisor';
+  } catch {
+    return 'supervisor';
+  }
 };
 
 /** balena-semver comparison helper usable from both server and client code. */
