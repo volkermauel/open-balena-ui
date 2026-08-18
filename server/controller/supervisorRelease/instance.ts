@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { InstanceApiError, NotFoundError } from './errors';
 import { supervisorAppSlug } from './cloud';
+import { SEMVER_PATTERN } from './semver';
 
 /**
  * Reads/writes against the user's openBalena instance, always with the
@@ -323,7 +324,7 @@ export const findReleaseImages = async (auth: InstanceAuth, releaseId: number): 
 
 /** Parse a semver string into the release row's semver_* fields. Pure — unit tested. */
 export const parseSemverFields = (version: string): SemverFields => {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/.exec(version.trim());
+  const match = SEMVER_PATTERN.exec(version.trim());
   if (!match) {
     throw new InstanceApiError(`Invalid semver version: ${version}`);
   }

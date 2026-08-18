@@ -148,7 +148,6 @@ router.get<Record<string, never>, VersionsSuccessResponse | ErrorResponse>(
       deviceType: typeInfo.slug,
       arch: typeInfo.arch,
       versions: entries,
-      mirroringEnabled: true,
     });
   }),
 );

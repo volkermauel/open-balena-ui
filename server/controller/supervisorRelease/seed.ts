@@ -95,6 +95,8 @@ export interface SeedExistingState {
   existingServiceNames: string[];
   existingImageHashes: string[];
   existingReleaseImageIds: number[];
+  /** Whether the existing release already links exactly the current images (digest unchanged). */
+  releaseLinksCurrentImages: boolean;
   bytesVerified: boolean;
 }
 
@@ -124,7 +126,11 @@ export const planSeedSteps = (
   if (!existing.releaseId) {
     steps.push('create-release');
   }
-  if (!existing.releaseId || existing.existingReleaseImageIds.length < cloud.imageCount) {
+  if (
+    !existing.releaseId ||
+    existing.existingReleaseImageIds.length < cloud.imageCount ||
+    !existing.releaseLinksCurrentImages
+  ) {
     steps.push('create-release-image');
   }
   if (steps.length === 0) {
@@ -204,7 +210,9 @@ export const seedSupervisorRelease = async (
     // Mirror catalog for this version (before touching the instance)
     const source = supervisorSourceRegistry();
     const sourceRepo = supervisorSourceRepo(arch);
-    const catalog = (await listMirrorVersions(arch)).find((entry) => entry.semver === version);
+    // The catalog stores semvers without the `v` prefix; accept both spellings.
+    const normalizedVersion = version.replace(/^v/, '');
+    const catalog = (await listMirrorVersions(arch)).find((entry) => entry.semver === normalizedVersion);
     if (!catalog) {
       throw new SupervisorTagMissingError(`version ${version}`, sourceRepo, source.url);
     }
@@ -272,6 +280,16 @@ export const seedSupervisorRelease = async (
       ? (await findReleaseImages(auth, existingRelease.id)).map((link) => link.imageId)
       : [];
 
+    // A digest change: the existing release links images other than the ones
+    // this seed resolves to (an image without a row yet can never be linked),
+    // so the new image must be linked into the existing release after mirroring.
+    const releaseLinksCurrentImages =
+      existingReleaseImageIds.length === images.length &&
+      images.every((image) => {
+        const imageId = imageIdByHash.get(image.digest);
+        return imageId !== undefined && existingReleaseImageIds.includes(imageId);
+      });
+
     // The pure planner (unit tested) decides which steps remain; execution
     // follows it exactly, in its order — the tested order IS the real order.
     const plan = planSeedSteps(
@@ -281,6 +299,7 @@ export const seedSupervisorRelease = async (
         existingServiceNames,
         existingImageHashes,
         existingReleaseImageIds,
+        releaseLinksCurrentImages,
         bytesVerified: await verifyAll(),
       },
       {

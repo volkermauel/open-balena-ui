@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { RegistryMirrorError, SupervisorTagMissingError, UpstreamError } from './errors';
+import { errorMessage, RegistryMirrorError, SupervisorTagMissingError, UpstreamError } from './errors';
 
 /**
  * Byte-identical image mirroring from a source registry into the instance's
@@ -274,7 +274,14 @@ export const getSourceToken = async (source: SourceRegistryConfig, repo: string)
   // no Authorization header).
   const url = `${source.url}/token?scope=${encodeURIComponent(`repository:${repo}:pull`)}`;
 
-  const res = await fetch(url);
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (error) {
+    throw new UpstreamError(
+      `Source registry token request failed: cannot reach ${source.url} (${errorMessage(error)})`,
+    );
+  }
   if (!res.ok) {
     throw new UpstreamError(`Source registry token request failed (${res.status}) for ${source.url}`, res.status);
   }
@@ -293,10 +300,10 @@ export const getSourceToken = async (source: SourceRegistryConfig, repo: string)
  * Resolve a tag's manifest digest at a source registry: GET the manifest by
  * tag (Accept: manifest+index types, source pull token) and take the
  * registry's `docker-content-digest` response header (read case-insensitively);
- * a registry that omits it gets the sha256 of the raw body. The result is
- * always digest-validated — it becomes the image row's `content_hash` and the
- * value mirrored and verified. A missing tag throws SupervisorTagMissingError;
- * other failures are upstream errors.
+ * a registry that omits it — or reports a malformed one — gets the sha256 of
+ * the raw body. The result is always digest-validated — it becomes the image
+ * row's `content_hash` and the value mirrored and verified. A missing tag
+ * throws SupervisorTagMissingError; other failures are upstream errors.
  */
 export const resolveTagDigest = async (repo: string, tag: string, source: SourceRegistryConfig): Promise<string> => {
   if (!REPO_PATH_PATTERN.test(repo)) {
@@ -307,9 +314,16 @@ export const resolveTagDigest = async (repo: string, tag: string, source: Source
   }
 
   const token = await getSourceToken(source, repo);
-  const res = await fetch(`${source.url}/v2/${repo}/manifests/${encodeURIComponent(tag)}`, {
-    headers: { Accept: MANIFEST_ACCEPT_HEADER, Authorization: `Bearer ${token}` },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${source.url}/v2/${repo}/manifests/${encodeURIComponent(tag)}`, {
+      headers: { Accept: MANIFEST_ACCEPT_HEADER, Authorization: `Bearer ${token}` },
+    });
+  } catch (error) {
+    throw new UpstreamError(
+      `Source registry manifest request failed: cannot reach ${source.url}/${repo}:${tag} (${errorMessage(error)})`,
+    );
+  }
   if (res.status === 404) {
     throw new SupervisorTagMissingError(`tag ${tag}`, repo, source.url);
   }
@@ -322,7 +336,13 @@ export const resolveTagDigest = async (repo: string, tag: string, source: Source
 
   const bytes = Buffer.from(await res.arrayBuffer());
   const reported = res.headers.get('docker-content-digest');
-  return assertDigest(reported ?? `sha256:${createHash('sha256').update(bytes).digest('hex')}`);
+  // A present-but-malformed header falls back to the body hash instead of
+  // failing the resolution; an absent header always did.
+  const digest =
+    reported !== null && isRegistryDigest(reported)
+      ? reported
+      : `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  return assertDigest(digest);
 };
 
 const targetTokens = new Map<string, CachedToken>();

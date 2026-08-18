@@ -295,12 +295,42 @@ test('resolveTagDigest falls back to the sha256 of the raw body when the header 
   }
 });
 
+test('a present-but-malformed docker-content-digest falls back to the body hash', async () => {
+  manifestByTagDigest = 'garbage'; // header present, but not a digest
+  installFetchMock();
+  try {
+    const digest = await resolveTagDigest('r1', '19.0.8', supervisorSourceRegistry());
+    assert.equal(digest, `sha256:${createHash('sha256').update(JSON.stringify(manifestList)).digest('hex')}`);
+  } finally {
+    restoreFetch();
+  }
+});
+
 test('a missing tag raises the actionable tag-missing error', async () => {
   installFetchMock();
   try {
     await assert.rejects(
       () => resolveTagDigest('r1', 'v0.0.0-missing', supervisorSourceRegistry()),
       SupervisorTagMissingError,
+    );
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('a network-level manifest failure is an upstream error naming the source registry', async () => {
+  globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+    if (String(input).startsWith('https://ghcr.io/token')) {
+      return jsonResponse(200, { token: 'source-token' });
+    }
+    throw new TypeError('fetch failed');
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => resolveTagDigest('r1', 'v19.0.8', supervisorSourceRegistry()),
+      (error: unknown) =>
+        error instanceof UpstreamError &&
+        error.message.includes('Source registry manifest request failed: cannot reach https://ghcr.io'),
     );
   } finally {
     restoreFetch();

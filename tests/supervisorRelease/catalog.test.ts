@@ -137,6 +137,25 @@ test('mirror tags become ordered, deduped versions preferring the v-prefixed raw
   assert.equal(bySemver.get('19.0.10')?.serviceName, 'supervisor');
 });
 
+test('a tag is listed only when the seed-time semver parser accepts it', () => {
+  const versions = mirrorTagsToVersions([
+    '19.0.8xyz',
+    '19.0.8.1',
+    '19.0.8beta1',
+    '19.0.8',
+    'v19.0.8',
+    '19.1.0-rev1',
+    '19.0.8+rev2',
+  ]);
+
+  assert.deepEqual(
+    versions.map((entry) => entry.semver),
+    ['19.1.0-rev1', '19.0.8+rev2', '19.0.8'],
+  );
+  // Both spellings collapse onto one entry, preferring the `v`-prefixed raw tag.
+  assert.equal(versions[2].mirrorTag, 'v19.0.8');
+});
+
 test('the mirror catalog lists tags anonymously and enriches from the cloud catalog', async () => {
   const versions = await run(() => listMirrorVersions('aarch64'));
 
@@ -162,10 +181,15 @@ test('the mirror catalog lists tags anonymously and enriches from the cloud cata
   assert.equal(versions[1].cloudReleaseId, 0);
 });
 
-test('an arch without a mirror repository lists as empty (tags 404)', async () => {
+test('an arch without a mirror repository lists as empty, skipping enrichment (tags 404)', async () => {
   installFetchMock(404);
   try {
     assert.deepEqual(await listMirrorVersions('amd64'), []);
+    assert.equal(
+      calls.some((call) => call.url.startsWith('https://api.balena-cloud.com/')),
+      false,
+      'no enrichment round-trips for an empty arch',
+    );
   } finally {
     restoreFetch();
   }
@@ -186,6 +210,50 @@ test('a failing tags request raises an upstream error naming the source registry
     await assert.rejects(
       () => listMirrorVersions('aarch64'),
       (error: unknown) => error instanceof UpstreamError && error.message.includes('ghcr.io'),
+    );
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('a tags/list refusing the anonymous token lists as empty (private repository)', async () => {
+  installFetchMock(401);
+  try {
+    assert.deepEqual(await listMirrorVersions('armv7hf'), []);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('a network failure on tags/list is an upstream error naming the source registry', async () => {
+  globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+    if (String(input).startsWith('https://ghcr.io/token')) {
+      return jsonResponse(200, { token: 'source-token' });
+    }
+    throw new TypeError('fetch failed');
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => listMirrorVersions('aarch64'),
+      (error: unknown) =>
+        error instanceof UpstreamError &&
+        error.message.includes('Supervisor source tags request failed: cannot reach https://ghcr.io'),
+    );
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('a network failure on the token request is an upstream error naming the source registry', async () => {
+  globalThis.fetch = (async (): Promise<Response> => {
+    throw new TypeError('fetch failed');
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => listMirrorVersions('aarch64'),
+      (error: unknown) =>
+        error instanceof UpstreamError &&
+        error.message.includes('Source registry token request failed: cannot reach https://ghcr.io'),
     );
   } finally {
     restoreFetch();

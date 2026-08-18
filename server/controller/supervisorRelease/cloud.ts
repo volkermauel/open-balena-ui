@@ -1,6 +1,7 @@
 import * as balenaSemver from 'balena-semver';
-import { UpstreamError } from './errors';
+import { errorMessage, UpstreamError } from './errors';
 import { getSourceToken, SourceRegistryConfig, supervisorSourceRegistry, supervisorSourceRepo } from './registryMirror';
+import { isSemverVersion } from './semver';
 
 /**
  * Supervisor version catalog: mirror tags from the configured ghcr-style
@@ -38,9 +39,8 @@ export interface CloudRelease {
   composition: unknown;
 }
 
+/** The release's single image as far as catalog consumers need it. */
 export interface CloudReleaseImage {
-  location: string;
-  contentHash: string;
   serviceName: string;
 }
 
@@ -141,11 +141,7 @@ export const fetchReleaseImages = async (releaseId: number): Promise<CloudReleas
         service && !Array.isArray(service) ? (service.service_name ?? '') : (service?.service_name ?? '');
 
       if (image.is_stored_at__image_location && image.content_hash) {
-        images.push({
-          location: image.is_stored_at__image_location,
-          contentHash: image.content_hash,
-          serviceName,
-        });
+        images.push({ serviceName });
       }
     }
   }
@@ -185,22 +181,29 @@ export const dedupeAndOrderReleases = (releases: CloudRelease[]): CatalogVersion
   return [...bySemver.values()].sort((a, b) => balenaSemver.rcompare(a.semver, b.semver));
 };
 
-/** Tag shape accepted as a supervisor version (semver-ish, optional `v` prefix). */
-const SUPERVISOR_TAG_PATTERN = /^v?\d+\.\d+\.\d+/;
+/**
+ * Tag shape accepted as a supervisor version: an optional `v` prefix on a
+ * semver body (design.md). The anchored shape alone is not enough — it
+ * admits e.g. `19.0.8.1` — so every candidate is additionally checked with
+ * the exact parser `parseSemverFields` uses at seed time: a tag is listed
+ * only if seeding could parse its semver.
+ */
+const SUPERVISOR_TAG_PATTERN = /^v?\d+\.\d+\.\d+([-.+].*)?$/;
 
 /**
- * Turn the mirror's raw tag list into catalog versions: keep semver-ish tags,
- * strip a leading `v` for the semver value (the raw tag is kept on the entry),
- * dedupe by semver preferring the `v`-prefixed raw tag, and order the result
- * semver-descending using balena-semver. Pure — unit tested.
+ * Turn the mirror's raw tag list into catalog versions: keep tags whose
+ * semver the seed-time parser accepts, strip a leading `v` for the semver
+ * value (the raw tag is kept on the entry), dedupe by semver preferring the
+ * `v`-prefixed raw tag, and order the result semver-descending using
+ * balena-semver. Pure — unit tested.
  */
 export const mirrorTagsToVersions = (tags: string[]): CatalogVersion[] => {
   const bySemver = new Map<string, CatalogVersion>();
   for (const tag of tags) {
-    if (!SUPERVISOR_TAG_PATTERN.test(tag)) {
+    const semver = tag.replace(/^v/, '');
+    if (!SUPERVISOR_TAG_PATTERN.test(tag) || !isSemverVersion(semver)) {
       continue;
     }
-    const semver = tag.replace(/^v/, '');
     const existing = bySemver.get(semver);
     // Prefer the `v`-prefixed raw tag when both spellings exist.
     if (!existing || (!existing.mirrorTag.startsWith('v') && tag.startsWith('v'))) {
@@ -220,9 +223,11 @@ export const mirrorTagsToVersions = (tags: string[]): CatalogVersion[] => {
 
 /**
  * Fetch the mirror repository's tags (anonymous pull token, `tags/list`).
- * A missing repository is an empty arch, not an error: ghcr issues anonymous
- * tokens regardless and answers `tags/list` with 404; registries that refuse
- * the token (401/403) for unknown repositories are treated the same way.
+ * A missing or private/nonexistent repository is an empty arch, not an
+ * error: ghcr issues anonymous tokens regardless and answers `tags/list`
+ * with 404, and registries that refuse the anonymous token or the tag list
+ * itself (401/403) get the same treatment. A real outage answers 5xx or
+ * fails at the network level, which still raises an upstream error.
  */
 const fetchMirrorTags = async (source: SourceRegistryConfig, repo: string): Promise<string[]> => {
   let token: string;
@@ -235,11 +240,18 @@ const fetchMirrorTags = async (source: SourceRegistryConfig, repo: string): Prom
     throw error;
   }
 
-  const res = await fetch(`${source.url}/v2/${repo}/tags/list?n=1000`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 404) {
-    return []; // no such repository on the mirror — a legitimately empty arch
+  let res: Response;
+  try {
+    res = await fetch(`${source.url}/v2/${repo}/tags/list?n=1000`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (error) {
+    throw new UpstreamError(
+      `Supervisor source tags request failed: cannot reach ${source.url}/${repo} (${errorMessage(error)})`,
+    );
+  }
+  if (res.status === 404 || res.status === 401 || res.status === 403) {
+    return []; // missing, private or unreadable repository — a legitimately empty arch
   }
   if (!res.ok) {
     throw new UpstreamError(
@@ -251,7 +263,7 @@ const fetchMirrorTags = async (source: SourceRegistryConfig, repo: string): Prom
   // page would be silently truncated, so surface it instead of hiding it.
   const link = res.headers.get('link');
   if (link?.includes('rel="next"')) {
-    console.warn(`Supervisor source tag list for ${repo} is paginated; showing the newest 1000 tags only`);
+    console.warn(`Supervisor source tag list for ${repo} is paginated; showing the first 1000 tags only`);
   }
 
   const body = (await res.json().catch(() => null)) as { tags?: unknown } | null;
@@ -271,6 +283,9 @@ export const listMirrorVersions = async (arch: string): Promise<CatalogVersion[]
   const source = supervisorSourceRegistry();
   const repo = supervisorSourceRepo(arch);
   const versions = mirrorTagsToVersions(await fetchMirrorTags(source, repo));
+  if (versions.length === 0) {
+    return []; // empty arch — not worth a pair of enrichment round-trips
+  }
 
   let cloudBySemver = new Map<string, CatalogVersion>();
   try {

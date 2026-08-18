@@ -98,8 +98,7 @@ const SupervisorUpdateDialog: React.FC<SupervisorUpdateDialogProps> = ({
   }, [open, deviceTypeSlug]);
 
   const isBulk = deviceIds.length > 1;
-  const mirroringEnabled = catalog?.mirroringEnabled ?? true;
-  const canApply = selected !== null && phase === 'idle' && (mirroringEnabled || selected.seeded);
+  const canApply = selected !== null && phase === 'idle';
 
   const apply = async (): Promise<void> => {
     if (!selected) {

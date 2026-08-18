@@ -25,3 +25,23 @@
     cleanup line); those references were removed as dead code — nothing can throw it anymore.
   - `prettier --check .` also required formatting pre-existing unformatted openspec markdown
     (add-hostos-version-management and this change's docs); content untouched, wrapping only.
+
+## Review fixes
+
+Post-implementation review of be13376 — fixes only, no new tasks ticked:
+
+1. Anchored the mirror tag pattern per design.md AND filtered candidates through the exact semver parser seeding uses
+   (shared `semver.ts` pattern): unparseable tags (`19.0.8.1`, `19.0.8xyz`) are never listed.
+2. Network-level failures (DNS/connection refused) in `getSourceToken`, `resolveTagDigest` and `fetchMirrorTags` now
+   raise `UpstreamError` naming the source registry (→ 502) instead of a 400 “fetch failed”.
+3. A re-seed after a digest change now links the new image into the existing release (`releaseLinksCurrentImages`
+   planner input; image rows → mirror bytes → link, crash-safe order preserved).
+4. Seeding accepts a `v`-prefixed version argument (normalized before the catalog lookup).
+5. Token-endpoint AND tags/list 401/403 both map to an empty arch (private/nonexistent repo); comment matches.
+6. Empty mirror results return before the balenaCloud enrichment round-trips.
+7. Added an imperative fetch-mocked seed test: mirror digest → image `content_hash` → hook-assigned repo mirroring →
+   digest verification.
+8. A present-but-malformed `Docker-Content-Digest` header falls back to the body hash instead of a hard 502.
+9. Dropped the vestigial `mirroringEnabled` gate from the dialog and the field from routes/client types.
+10. Pagination warning no longer claims “newest” ordering; unused `CloudReleaseImage.location/contentHash` fields
+    removed (only `serviceName` is consumed by enrichment).

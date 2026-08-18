@@ -16,6 +16,9 @@ export class UpstreamError extends Error {
   }
 }
 
+/** Message of an unknown error value (used when re-wrapping network failures). */
+export const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
 /** A requested entity (device type, supervisor version, ...) does not exist. */
 export class NotFoundError extends Error {
   constructor(message: string) {
