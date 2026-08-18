@@ -19,6 +19,8 @@ import TargetReleaseIcon from '../../ui/TargetReleaseIcon';
 import versions from '../../versions';
 import environment from '../../lib/reactAppEnv';
 import TargetReleaseTooltip from '../../ui/TargetReleaseTooltip';
+import SupervisorUpdateButton from '../../ui/SupervisorUpdateButton';
+import { fetchSupervisorStatus, SupervisorStatusResponse } from '../../lib/supervisorRelease';
 
 const isPinnedOnRelease = versions.resource('isPinnedOnRelease', environment.REACT_APP_OPEN_BALENA_API_VERSION);
 
@@ -29,6 +31,10 @@ const TargetRelease: React.FC = () => {
     return null;
   }
 
+  return <TargetReleaseContent record={record} />;
+};
+
+const TargetReleaseContent: React.FC<{ record: Record<string, any> }> = ({ record }) => {
   const applicationId = record['belongs to-application'];
   const needsFleetFallback = !record['should be running-release'] && Boolean(applicationId);
 
@@ -78,6 +84,57 @@ const TargetRelease: React.FC = () => {
         </TargetReleaseTooltip>
       </ReferenceField>
     </RecordContextProvider>
+  );
+};
+
+/** Supervisor version cell: current version, pending target, and the update action. */
+const SupervisorVersionCell: React.FC = () => {
+  const record = useRecordContext<{
+    'id': number;
+    'supervisor version'?: string | null;
+    'is of-device type'?: number;
+  }>();
+  const [status, setStatus] = React.useState<SupervisorStatusResponse | null>(null);
+
+  React.useEffect(() => {
+    if (!record?.id) {
+      return;
+    }
+    let cancelled = false;
+    fetchSupervisorStatus(record.id)
+      .then((data) => {
+        if (!cancelled) {
+          setStatus(data);
+        }
+      })
+      .catch(() => {
+        // Status display is best-effort; the update dialog surfaces errors.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [record?.id]);
+
+  if (!record) {
+    return null;
+  }
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, alignItems: 'flex-start' }}>
+      <span>{record['supervisor version'] ?? '—'}</span>
+      {status?.pending && status?.targetVersion && (
+        <Tooltip title={`Target supervisor release ${status.targetReleaseId} (raw: ${status.targetVersion})`} arrow>
+          <Chip size='small' color='warning' variant='outlined' label={`target: ${status.targetVersion} (pending)`} />
+        </Tooltip>
+      )}
+      <SupervisorUpdateButton
+        deviceIds={[record.id]}
+        deviceTypeId={record['is of-device type']}
+        currentVersion={record['supervisor version'] ?? null}
+        size='small'
+        sx={{ marginTop: 0.5 }}
+      />
+    </Box>
   );
 };
 
@@ -161,7 +218,7 @@ const SummaryWidget: React.FC = () => {
             <tr>
               <td>
                 <Label>Supervisor Version</Label>
-                <TextField source='supervisor version' />
+                <SupervisorVersionCell />
               </td>
 
               <td>

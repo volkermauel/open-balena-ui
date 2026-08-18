@@ -49,7 +49,6 @@ jobs:
         run: npm run lint
 
       - name: Testing
-        if: false # Jest (or similar) needs added to dev-dependencies and configured properly...
         run: npm run test
 
       - name: Build
