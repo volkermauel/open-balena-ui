@@ -173,11 +173,3 @@ export const mergeFleetRecords = (seeded: ResourceRecord[], incoming: ResourceRe
   }
   return merged;
 };
-
-/**
- * A fleet belongs to the selected device type when its `is for-device type` reference
- * matches the device type's id (openBalena OData has no usable class filter, so the
- * wizard filters client-side). Pure — unit tested.
- */
-export const fleetMatchesDeviceType = (fleet: ResourceRecord, deviceTypeId: string | number | undefined): boolean =>
-  deviceTypeId === undefined || String(fleet['is for-device type']) === String(deviceTypeId);

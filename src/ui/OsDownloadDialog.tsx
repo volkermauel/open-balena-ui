@@ -30,7 +30,6 @@ import {
   fetchOsImageCacheStatus,
   fetchOsImageJob,
   fetchOsImageVersions,
-  fleetMatchesDeviceType,
   mergeFleetRecords,
   prepareOsImage,
   type OsImageFormat,
@@ -228,19 +227,6 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, deviceTypeSlug]);
 
-  const selectedDeviceTypeId = deviceTypes.find((record) => String(record.slug) === deviceTypeSlug)?.id;
-  const visibleFleets = fleets.filter((record) => fleetMatchesDeviceType(record, selectedDeviceTypeId));
-
-  // A device-type change invalidates a fleet of another device type: reset the
-  // selection to the first fleet of the newly selected type (or empty).
-  React.useEffect(() => {
-    const selected = fleets.find((record) => String(record.id) === fleetId);
-    if (selected && !fleetMatchesDeviceType(selected, selectedDeviceTypeId)) {
-      setFleetId(visibleFleets[0] !== undefined ? String(visibleFleets[0].id) : '');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deviceTypeSlug, fleets, fleetId]);
-
   const pollJob = (jobId: string, intervalMs: number) => {
     pollTimer.current = window.setTimeout(async () => {
       try {
@@ -413,7 +399,7 @@ export const OsDownloadDialog: React.FC<OsDownloadDialogProps> = ({
               label='Fleet'
               onChange={(event) => setFleetId(event.target.value)}
             >
-              {visibleFleets.map((record) => (
+              {fleets.map((record) => (
                 <MenuItem key={String(record.id)} value={String(record.id)}>
                   {String(record['app name'] ?? record.id)}
                 </MenuItem>

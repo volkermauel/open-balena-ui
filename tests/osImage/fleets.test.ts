@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fleetMatchesDeviceType, mergeFleetRecords } from '../../src/lib/osImage';
+import { mergeFleetRecords } from '../../src/lib/osImage';
 import type { ResourceRecord } from '../../src/types/resource';
 
 const fleet = (id: number | string, deviceTypeId: number | string, name = `fleet-${id}`): ResourceRecord =>
@@ -33,15 +33,4 @@ test('mergeFleetRecords keeps the seeded fleet when the list request returns not
   const seeded = [fleet('abc', 7)];
   assert.deepEqual(mergeFleetRecords(seeded, []), seeded);
   assert.deepEqual(mergeFleetRecords([], []), []);
-});
-
-test('fleetMatchesDeviceType compares the is-for-device-type reference as a string', () => {
-  const record = fleet(1, 42);
-
-  assert.equal(fleetMatchesDeviceType(record, 42), true);
-  assert.equal(fleetMatchesDeviceType(record, '42'), true);
-  assert.equal(fleetMatchesDeviceType(record, 43), false);
-
-  // Without a device-type selection every fleet matches (dropdown never empty on open).
-  assert.equal(fleetMatchesDeviceType(record, undefined), true);
 });
