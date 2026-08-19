@@ -7,6 +7,7 @@ import {
   EditButton,
   List,
   ReferenceField,
+  TopToolbar,
   ReferenceInput,
   ReferenceManyField,
   SelectInput,
@@ -20,6 +21,7 @@ import {
 } from 'react-admin';
 import { useCreateDeviceType } from '../lib/deviceType';
 import HostosVersionsButton from '../ui/HostosVersionsButton';
+import SupervisorVersionsButton from '../ui/SupervisorVersionsButton';
 import Row from '../ui/Row';
 import versions from '../versions';
 import environment from '../lib/reactAppEnv';
@@ -32,9 +34,17 @@ const HostosVersionsRowButton: React.FC = () => {
   return record?.slug ? <HostosVersionsButton deviceTypeSlug={record.slug} /> : null;
 };
 
+/** Toolbar of the device types page: the arch-scoped supervisor import lives
+ * here (not per device-type row) because the supervisor is arch-dependent only. */
+const DeviceTypeListActions: React.FC = () => (
+  <TopToolbar>
+    <SupervisorVersionsButton />
+  </TopToolbar>
+);
+
 export const DeviceTypeList: React.FC = () => {
   return (
-    <List>
+    <List actions={<DeviceTypeListActions />}>
       <Datagrid size='medium' rowClick={false}>
         <TextField label='Slug' source='slug' />
         <TextField label='Name' source='name' />

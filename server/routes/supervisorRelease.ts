@@ -14,8 +14,14 @@ import {
   findApplicationBySlug,
   getDeviceSupervisorState,
   InstanceAuth,
+  listDeviceTypeArches,
 } from '../controller/supervisorRelease/instance';
-import { resolveCatalogForDeviceType, seedSupervisorRelease } from '../controller/supervisorRelease/seed';
+import {
+  resolveCatalogForArch,
+  resolveCatalogForDeviceType,
+  seedSupervisorRelease,
+  seedSupervisorReleaseForArch,
+} from '../controller/supervisorRelease/seed';
 import { DeviceUpdateResult, updateSupervisorReleases } from '../controller/supervisorRelease/update';
 
 interface ErrorResponse {
@@ -32,10 +38,15 @@ interface SupervisorVersionEntry {
 
 interface VersionsSuccessResponse {
   success: true;
-  deviceType: string;
+  /** Only set when the listing was resolved from a device type. */
+  deviceType?: string;
   arch: string;
   versions: SupervisorVersionEntry[];
-  mirroringEnabled: boolean;
+}
+
+interface ArchesSuccessResponse {
+  success: true;
+  arches: string[];
 }
 
 interface StatusSuccessResponse {
@@ -58,7 +69,12 @@ interface UpdateSuccessResponse {
   results: DeviceUpdateResult[];
 }
 
+/** Arch slug shape accepted for arch-keyed supervisor operations. */
+const isArchSlug = (value: string): boolean => /^[a-z0-9][a-z0-9-]*$/.test(value);
+
 interface SeedRequestBody {
+  /** Arch to seed for — preferred over deviceType (the supervisor is arch-scoped). */
+  arch?: string;
   deviceType?: string;
   version?: string;
 }
@@ -108,9 +124,10 @@ const wrap = (handler: (req: Request, res: Response) => Promise<void>) => {
 };
 
 /**
- * GET /supervisor-releases/versions?deviceType=<slug>
- * Supervisor versions for the device type's arch, newest first, annotated with
- * whether each is already seeded into the instance.
+ * GET /supervisor-releases/versions?arch=<slug> | ?deviceType=<slug>
+ * Supervisor versions for a CPU arch (or a device type's arch), newest first,
+ * annotated with whether each is already seeded into the instance. The
+ * supervisor depends only on the architecture, so `arch` is the canonical key.
  */
 router.get<Record<string, never>, VersionsSuccessResponse | ErrorResponse>(
   '/versions',
@@ -118,16 +135,32 @@ router.get<Record<string, never>, VersionsSuccessResponse | ErrorResponse>(
   authorize,
   wrap(async (req, res) => {
     const deviceType = String(req.query.deviceType ?? '');
-    if (!deviceType) {
-      res.status(406).json({ success: false, message: 'Request is lacking deviceType in query context' });
+    const arch = String(req.query.arch ?? '');
+    if (!arch && !deviceType) {
+      res.status(406).json({ success: false, message: 'Request is lacking arch/deviceType in query context' });
       return;
     }
 
     const auth = callerAuth(req);
-    const { deviceType: typeInfo, versions } = await resolveCatalogForDeviceType(auth, deviceType);
+    let resolvedArch: string;
+    let versions: CatalogVersion[];
+    let resolvedFrom: string | undefined;
+    if (arch) {
+      if (!isArchSlug(arch)) {
+        res.status(400).json({ success: false, message: `Invalid CPU architecture: ${arch}` });
+        return;
+      }
+      resolvedArch = arch;
+      versions = await resolveCatalogForArch(arch);
+    } else {
+      const resolved = await resolveCatalogForDeviceType(auth, deviceType);
+      resolvedArch = resolved.deviceType.arch;
+      versions = resolved.versions;
+      resolvedFrom = resolved.deviceType.slug;
+    }
 
     // Merge with instance state: an existing supervisor app release marks the version seeded.
-    const app = await findApplicationBySlug(auth, supervisorAppSlug(typeInfo.arch));
+    const app = await findApplicationBySlug(auth, supervisorAppSlug(resolvedArch));
     const instanceReleases = app ? await findAppReleases(auth, app.id) : [];
 
     const seededByRaw = new Map(instanceReleases.map((release) => [release.rawVersion, release.id]));
@@ -145,10 +178,25 @@ router.get<Record<string, never>, VersionsSuccessResponse | ErrorResponse>(
 
     res.status(200).json({
       success: true,
-      deviceType: typeInfo.slug,
-      arch: typeInfo.arch,
+      ...(resolvedFrom !== undefined ? { deviceType: resolvedFrom } : {}),
+      arch: resolvedArch,
       versions: entries,
     });
+  }),
+);
+
+/**
+ * GET /supervisor-releases/arches
+ * Distinct CPU architectures across the instance's device types — the arch
+ * picker of the arch-scoped supervisor import dialog.
+ */
+router.get<Record<string, never>, ArchesSuccessResponse | ErrorResponse>(
+  '/arches',
+  ...dosProtect,
+  authorize,
+  wrap(async (req, res) => {
+    const arches = await listDeviceTypeArches(callerAuth(req));
+    res.status(200).json({ success: true, arches });
   }),
 );
 
@@ -180,21 +228,34 @@ router.get<Record<string, never>, StatusSuccessResponse | ErrorResponse>(
 );
 
 /**
- * POST /supervisor-releases/seed { deviceType, version }
- * Idempotently seed a supervisor version into the instance.
+ * POST /supervisor-releases/seed { arch, version } | { deviceType, version }
+ * Idempotently seed a supervisor version into the instance for a CPU arch —
+ * one supervisor application and one registry repo per arch, independent of
+ * any device make/model.
  */
 router.post<Record<string, never>, SeedSuccessResponse | ErrorResponse, SeedRequestBody>(
   '/seed',
   ...dosProtect,
   authorize,
   wrap(async (req, res) => {
-    const { deviceType, version } = req.body ?? {};
-    if (!deviceType || !version) {
-      res.status(406).json({ success: false, message: 'Request is lacking deviceType/version in body context' });
+    const { arch, deviceType, version } = req.body ?? {};
+    if (!(arch || deviceType) || !version) {
+      res.status(406).json({ success: false, message: 'Request is lacking arch/deviceType/version in body context' });
       return;
     }
 
-    const result = await seedSupervisorRelease(callerAuth(req), String(deviceType), String(version));
+    const auth = callerAuth(req);
+    if (arch !== undefined && arch !== '') {
+      if (!isArchSlug(arch)) {
+        res.status(400).json({ success: false, message: `Invalid CPU architecture: ${arch}` });
+        return;
+      }
+      const result = await seedSupervisorReleaseForArch(auth, arch, String(version));
+      res.status(200).json({ success: true, ...result });
+      return;
+    }
+
+    const result = await seedSupervisorRelease(auth, String(deviceType), String(version));
     res.status(200).json({ success: true, ...result });
   }),
 );

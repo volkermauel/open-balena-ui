@@ -200,6 +200,13 @@ export const resolveCatalogForDeviceType = async (
 };
 
 /**
+ * Resolve the mirror catalog for a CPU arch directly — the supervisor depends
+ * only on the architecture, never on the device make/model, so the arch-scoped
+ * import surface needs no device type at all.
+ */
+export const resolveCatalogForArch = (arch: string): Promise<CatalogVersion[]> => listMirrorVersions(arch);
+
+/**
  * Seed (or confirm already seeded) a supervisor version for a device type's
  * arch and return the instance release id.
  */
@@ -229,9 +236,22 @@ export const seedSupervisorRelease = async (
   version: string,
 ): Promise<SeedResult> => {
   const { deviceType } = await resolveCatalogForDeviceType(auth, deviceTypeSlug);
-  return withSeedLock(deviceType.arch, async () => {
+  return seedSupervisorReleaseForArch(auth, deviceType.arch, version);
+};
+
+/**
+ * Arch-keyed seed: one supervisor application and one registry repo exist per
+ * CPU architecture, so importing is an arch-level operation (the Supervisor
+ * Versions dialog on the Device Types page). Device-type-keyed seeding above
+ * just resolves the arch first.
+ */
+export const seedSupervisorReleaseForArch = async (
+  auth: InstanceAuth,
+  arch: string,
+  version: string,
+): Promise<SeedResult> =>
+  withSeedLock(arch, async () => {
     const { authorization } = auth;
-    const arch = deviceType.arch;
     const slug = supervisorAppSlug(arch);
 
     // Mirror catalog for this version (before touching the instance)
@@ -434,7 +454,6 @@ export const seedSupervisorRelease = async (
       images: images.map((image) => ({ repo: targetRepoFor(image.digest), digest: image.digest })),
     };
   });
-};
 
 const existingServiceMatch = (serviceId: number, serviceIds: Map<string, number>): boolean =>
   [...serviceIds.values()].includes(serviceId);
