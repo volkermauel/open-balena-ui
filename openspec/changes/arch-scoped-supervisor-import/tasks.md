@@ -1,0 +1,6 @@
+- [x] 1. `GET /supervisor-releases/arches` + arch-keyed `/versions?arch=` and `/seed {arch,version}` (done)
+- [x] 2. `seedSupervisorReleaseForArch` extracted; device-type seed delegates via arch resolution (done)
+- [x] 3. Update flow pins only imported releases; refuses unimported versions with guidance (done)
+- [x] 4. Supervisor Versions dialog + Device Types toolbar button with arch picker (done)
+- [x] 5. Device dialog: arch header, imported-only list, no import/mirror copy (done)
+- [x] 6. Tests: update refuses/pins without mirror round-trips; arches dedupe (161/161) (done)

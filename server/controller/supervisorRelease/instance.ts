@@ -199,6 +199,27 @@ export const getDeviceTypeBySlug = async (auth: InstanceAuth, slug: string): Pro
   return { id: row.id, slug: row.slug, arch };
 };
 
+/**
+ * Distinct CPU architecture slugs across the instance's device types — the
+ * supervisor depends only on the arch, so this is the arch picker's data.
+ */
+export const listDeviceTypeArches = async (auth: InstanceAuth): Promise<string[]> => {
+  interface Row {
+    is_of__cpu_architecture?: { slug?: string }[] | { slug?: string } | null;
+  }
+
+  const rows = await odataGet<Row>(
+    auth,
+    `/v6/device_type?$select=id,slug,is_of__cpu_architecture&$expand=is_of__cpu_architecture($select=slug)` +
+      `&$orderby=id%20asc&$top=1000`,
+  );
+
+  const arches = rows
+    .map((row) => asArray(row.is_of__cpu_architecture)[0]?.slug)
+    .filter((slug): slug is string => typeof slug === 'string');
+  return [...new Set(arches)].sort();
+};
+
 /** Find any instance device type for a CPU arch slug (first by id) — used for app creation. */
 export const findDeviceTypeByArch = async (auth: InstanceAuth, arch: string): Promise<DeviceTypeInfo> => {
   interface Row {

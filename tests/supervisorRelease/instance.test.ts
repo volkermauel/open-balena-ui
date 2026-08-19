@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   createImage,
   getDeviceSupervisorState,
+  listDeviceTypeArches,
   patchDeviceSupervisorRelease,
 } from '../../server/controller/supervisorRelease/instance';
 
@@ -112,6 +113,41 @@ test('device supervisor state read and target patch use the v7 device endpoint',
     const patch = captured.find((call) => call.url.includes('/v7/device(3)') && !call.url.includes('?'));
     assert.ok(patch, 'target patch hit /v7/device');
     assert.equal(patch.body.should_be_managed_by__release, 42);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousUrl === undefined) {
+      delete process.env.REACT_APP_OPEN_BALENA_API_URL;
+    } else {
+      process.env.REACT_APP_OPEN_BALENA_API_URL = previousUrl;
+    }
+  }
+});
+
+/**
+ * The arch picker of the arch-scoped supervisor import dialog lists the
+ * distinct CPU architectures across the instance's device types.
+ */
+test('listDeviceTypeArches returns distinct sorted arch slugs', async () => {
+  const previousUrl = process.env.REACT_APP_OPEN_BALENA_API_URL;
+  process.env.REACT_APP_OPEN_BALENA_API_URL = 'https://api.openbalena.local';
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (): Promise<Response> =>
+    new Response(
+      JSON.stringify({
+        d: [
+          { id: 120, is_of__cpu_architecture: [{ slug: 'aarch64' }] },
+          { id: 123, is_of__cpu_architecture: [{ slug: 'aarch64' }] },
+          { id: 44, is_of__cpu_architecture: [{ slug: 'amd64' }] },
+          { id: 45, is_of__cpu_architecture: null },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )) as typeof fetch;
+
+  try {
+    const arches = await listDeviceTypeArches({ authorization: 'Bearer t' });
+    assert.deepEqual(arches, ['aarch64', 'amd64']);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousUrl === undefined) {

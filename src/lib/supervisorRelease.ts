@@ -14,9 +14,14 @@ export interface SupervisorVersionEntry {
 }
 
 export interface SupervisorVersionsResponse {
-  deviceType: string;
+  /** Only set when the listing was resolved from a device type. */
+  deviceType?: string;
   arch: string;
   versions: SupervisorVersionEntry[];
+}
+
+export interface SupervisorArchesResponse {
+  arches: string[];
 }
 
 export interface SupervisorStatusResponse {
@@ -85,10 +90,22 @@ export const fetchSupervisorVersions = (deviceTypeSlug: string): Promise<Supervi
 export const fetchSupervisorStatus = (deviceId: number): Promise<SupervisorStatusResponse> =>
   request<SupervisorStatusResponse>(`/status?deviceId=${deviceId}`);
 
-export const seedSupervisorVersion = (deviceTypeSlug: string, version: string): Promise<SupervisorSeedResponse> =>
+/** Distinct CPU architectures across the instance's device types. */
+export const fetchSupervisorArches = (signal?: AbortSignal): Promise<SupervisorArchesResponse> =>
+  request<SupervisorArchesResponse>('/arches', { signal });
+
+/** Supervisor versions for a CPU arch — the arch-scoped import surface's data. */
+export const fetchSupervisorVersionsForArch = (
+  arch: string,
+  signal?: AbortSignal,
+): Promise<SupervisorVersionsResponse> =>
+  request<SupervisorVersionsResponse>(`/versions?arch=${encodeURIComponent(arch)}`, { signal });
+
+/** Import (idempotently seed) a supervisor version for a CPU arch. */
+export const importSupervisorVersion = (arch: string, version: string): Promise<SupervisorSeedResponse> =>
   request<SupervisorSeedResponse>('/seed', {
     method: 'POST',
-    body: JSON.stringify({ deviceType: deviceTypeSlug, version }),
+    body: JSON.stringify({ arch, version }),
   });
 
 export const updateSupervisorVersions = (

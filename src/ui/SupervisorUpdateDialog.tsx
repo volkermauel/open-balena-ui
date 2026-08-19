@@ -40,8 +40,10 @@ export interface SupervisorUpdateDialogProps {
 
 type ApplyPhase = 'idle' | 'applying' | 'done';
 
-const SUPERVISOR_UPDATE_HINT =
-  'This may take a while: the image (~150 MB per version) is copied into your registry on first use, which can take minutes.';
+/** Importing happens exclusively on the arch-scoped Supervisor Versions dialog
+ * (Device Types page) — this dialog only pins already-imported versions. */
+const SUPERVISOR_IMPORT_POINTER =
+  'Only imported supervisor versions are listed. Import more via “Supervisor Versions” on the Device Types page.';
 
 /**
  * Dialog listing the supervisor versions available for a device type, marking
@@ -125,7 +127,6 @@ const SupervisorUpdateDialog: React.FC<SupervisorUpdateDialogProps> = ({
       <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
         <span>{entry.version}</span>
         {current && <Chip size='small' color='info' variant='outlined' label='current' />}
-        {entry.seeded && !current && <Chip size='small' variant='outlined' label='seeded' />}
         {downgrade && <Chip size='small' color='default' variant='outlined' label='downgrade not allowed' />}
       </Box>
     );
@@ -136,7 +137,7 @@ const SupervisorUpdateDialog: React.FC<SupervisorUpdateDialogProps> = ({
       <DialogTitle>{title ?? 'Update Supervisor'}</DialogTitle>
       <DialogContent>
         <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
-          Device type <strong>{deviceTypeSlug}</strong>
+          Architecture <strong>{catalog?.arch ?? '…'}</strong>
           {currentVersion ? (
             <>
               {' — current supervisor version '}
@@ -163,34 +164,36 @@ const SupervisorUpdateDialog: React.FC<SupervisorUpdateDialogProps> = ({
             dense
             sx={{ maxHeight: 320, overflow: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}
           >
-            {catalog.versions.length === 0 && (
+            {catalog.versions.filter((entry) => entry.seeded).length === 0 && (
               <ListItemButton disabled>
-                <ListItemText primary='No supervisor versions found for this device type' />
+                <ListItemText primary='No supervisor versions imported for this architecture yet' />
               </ListItemButton>
             )}
-            {catalog.versions.map((entry) => {
-              const downgrade = isDowngrade(entry.version, currentVersion ?? null);
-              const selectable = !downgrade;
-              return (
-                <ListItemButton
-                  key={entry.version}
-                  disabled={!selectable}
-                  selected={selected?.version === entry.version}
-                  onClick={() => setSelected(entry)}
-                >
-                  <ListItemText
-                    primary={renderVersionLabel(entry)}
-                    secondary={
-                      downgrade
-                        ? 'Downgrading the supervisor is not allowed'
-                        : entry.rawVersion !== entry.version
-                          ? `raw: ${entry.rawVersion}`
-                          : undefined
-                    }
-                  />
-                </ListItemButton>
-              );
-            })}
+            {catalog.versions
+              .filter((entry) => entry.seeded)
+              .map((entry) => {
+                const downgrade = isDowngrade(entry.version, currentVersion ?? null);
+                const selectable = !downgrade;
+                return (
+                  <ListItemButton
+                    key={entry.version}
+                    disabled={!selectable}
+                    selected={selected?.version === entry.version}
+                    onClick={() => setSelected(entry)}
+                  >
+                    <ListItemText
+                      primary={renderVersionLabel(entry)}
+                      secondary={
+                        downgrade
+                          ? 'Downgrading the supervisor is not allowed'
+                          : entry.rawVersion !== entry.version
+                            ? `raw: ${entry.rawVersion}`
+                            : undefined
+                      }
+                    />
+                  </ListItemButton>
+                );
+              })}
           </List>
         )}
 
@@ -198,14 +201,15 @@ const SupervisorUpdateDialog: React.FC<SupervisorUpdateDialogProps> = ({
           <Box sx={{ mt: 2, mb: 1 }}>
             <LinearProgress />
             <Typography variant='body2' sx={{ mt: 1 }}>
-              {selected?.seeded
-                ? 'Applying update to devices…'
-                : 'Seeding supervisor version: copying metadata and mirroring image bytes into your registry…'}
-            </Typography>
-            <Typography variant='body2' color='text.secondary' sx={{ mt: 0.5 }}>
-              {SUPERVISOR_UPDATE_HINT}
+              Applying update to devices…
             </Typography>
           </Box>
+        )}
+
+        {phase !== 'applying' && catalog && catalog.versions.some((entry) => !entry.seeded) && (
+          <Typography variant='caption' color='text.secondary' sx={{ display: 'block', mt: 1 }}>
+            {SUPERVISOR_IMPORT_POINTER}
+          </Typography>
         )}
 
         {phase === 'done' && results && (
